@@ -7,6 +7,7 @@
 #User="sPath='User/HelloWorld.lua', bIsNeedStrartup='', sStartupArgs=''"
 #User="sPath='User/TestTurtle.lua', bIsNeedStrartup='',  sStartupArgs=''"
 #User="sPath='User/Turtle_GeoFinder.lua', bIsNeedStrartup='',  sStartupArgs=', 16'"
+#User="sPath='User/Turtle_AECrystalManager.lua', bIsNeedStrartup='',  sStartupArgs=''"
 #User="sPath='User/Turtle_MahouCraft.lua', bIsNeedStrartup='',  sStartupArgs=''"
 #User="sPath='User/PC_AstralInfuserCrafter_WithIntegrated.lua', bIsNeedStrartup='',  sStartupArgs=''"
 #User="sPath='User/TestPC.lua', bIsNeedStrartup='',  sStartupArgs=''"

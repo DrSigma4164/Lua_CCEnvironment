@@ -184,24 +184,44 @@ function tFunctionLists.getTurtleDirection(allowDig) --> direction(vector) | nil
 	return vDir:normalize(), nil
 end
 
+-- Фунція встановлення напрямку черепахи
+function tFunctionLists.setTurtleDirection(vDirection, vDirToDest) --> newDirection(vector), nil | dontChangeDirection(vector), errorMsg(string) -- No change position
+    expect.expect(1, vDirection, "table")
+    expect.expect(2, vDirToDest, "table")
+    if not turtle then return vDirection, "Error: requires a Turtle" end -- Якщо функцією користується не "черепашка"
+
+    if not vDirection:equals(vDirToDest) then -- Якщо ми дивимось не в правильному напрямку, то крутимо "черепашку" в правильний напрямок
+        if (vDirection:cross(vDirToDest)).y < 0 then -- Якщо верктор дивиться вниз, то повертаємо вправо
+            vDirection = tFunctionLists.goTurtleRight(vDirection)
+        elseif (vDirection:cross(vDirToDest)).y > 0 then -- Якщо верктор дивиться вверх, то повертаємо вліво
+            vDirection = tFunctionLists.goTurtleLeft(vDirection)
+        else -- Інакше, якщо вектор нульвоий, і ми дивись в не тому напрямку, то потрібно повернутися на 180
+            vDirection = tFunctionLists.goTurtleRight(vDirection)
+            vDirection = tFunctionLists.goTurtleRight(vDirection)
+        end
+    end
+
+    return vDirection, nil
+end
+
 -- Фунція повороту праворуч
-function tFunctionLists.goTurtleRight(vDirection) --> NowDirection(vector), nil | nil, errorMsg(string)
+function tFunctionLists.goTurtleRight(vDirection) --> NowDirection(vector), nil | dontChangeDirection(vector), errorMsg(string)
     expect.expect(1, vDirection, "table")
     if not turtle then return vDirection, "Error: requires a Turtle" end -- Якщо функцією користується не "черепашка"
     if turtle.turnRight() then return vDirection:cross(vector.new(0, 1, 0)), nil
-    else return nil, "Can't turn right" end
+    else return vDirection, "Can't turn right" end
 end
 
 -- Фунція повороту ліворуч
-function tFunctionLists.goTurtleLeft(vDirection) --> NowDirection(vector), nil | nil, errorMsg(string)
+function tFunctionLists.goTurtleLeft(vDirection) --> NowDirection(vector), nil | dontChangeDirection(vector), errorMsg(string)
     expect.expect(1, vDirection, "table")
     if not turtle then return vDirection, "Error: requires a Turtle" end -- Якщо функцією користується не "черепашка"
     if turtle.turnLeft() then return vDirection:cross(vector.new(0, -1, 0)), nil
-    else return nil, "Can't turn left" end
+    else return vDirection, "Can't turn left" end
 end
 
--- Функція встановлення напрямку руху черепахи
-function tFunctionLists.goInDirection(vDirection, vDirToDest, allowDig) --> direction(vector), nil | errorMsg(string), nil -- No change position
+-- Функція руху черепахи в певному напрямку
+function tFunctionLists.goInDirection(vDirection, vDirToDest, allowDig) --> direction(vector), nil | dontChangeDirection(vector), errorMessage(string) -- No change position
     expect.expect(1, vDirection, "table")
     expect.expect(2, vDirToDest, "table")
     expect.expect(3, allowDig, "boolean", "nil")
@@ -214,16 +234,7 @@ function tFunctionLists.goInDirection(vDirection, vDirToDest, allowDig) --> dire
         if not turtle.down() then if allowDig then turtle.digDown() end end --Якщо не вдалось пройти вниз, то якщо є дозвіл на копання, то копаємо вниз
     else
         if math.abs(vDirToDest.x) == math.abs(vDirToDest.z) then vDirToDest.z = 0 end -- якщо потрібно рухатись по діагоналі, то пріоритетом є вісь X
-        if not vDirection:equals(vDirToDest) then -- Якщо ми дивимось не в правильному напрямку, то крутимо "черепашку" в правильний напрямок
-            if (vDirection:cross(vDirToDest)).y < 0 then -- Якщо верктор дивиться вниз, то повертаємо вправо
-                vDirection = tFunctionLists.goTurtleRight(vDirection)
-            elseif (vDirection:cross(vDirToDest)).y > 0 then -- Якщо верктор дивиться вверх, то повертаємо вліво
-                vDirection = tFunctionLists.goTurtleLeft(vDirection)
-            else -- Інакше, якщо вектор нульвоий, і ми дивись в не тому напрямку, то потрібно повернутися на 180
-                vDirection = tFunctionLists.goTurtleRight(vDirection)
-                vDirection = tFunctionLists.goTurtleRight(vDirection)
-            end
-        end
+        vDirection = tFunctionLists.setTurtleDirection(vDirection, vDirToDest) -- крутимо "черепашку" в правильний напрямок
         if not turtle.forward() then if allowDig then turtle.dig() end end --Якщо не вдалось пройти вперед, то якщо є дозвіл на копання, то копаємо вперед
     end
 
@@ -231,7 +242,7 @@ function tFunctionLists.goInDirection(vDirection, vDirToDest, allowDig) --> dire
 end
 
 -- Функция поиска пути к определенным координатам
-function tFunctionLists.goToGPS(vDestPos, vDirection, allowDig, fFuncAftMove) -- fFuncAftMove(vDirection) return vDirection end --> NowDirection(vector), nil | errorMsg(string)
+function tFunctionLists.goToGPS(vDestPos, vDirection, allowDig, fFuncAftMove) -- fFuncAftMove(vDirection) return vDirection end --> NowDirection(vector), nil | dontChangeDirection(vector), errorMsg(string)
     expect.expect(1, vDestPos, "table")
     expect.expect(2, vDirection, "table", "nil")
     expect.expect(3, allowDig, "boolean", "nil")
@@ -254,7 +265,7 @@ function tFunctionLists.goToGPS(vDestPos, vDirection, allowDig, fFuncAftMove) --
 
         if (vCurPos:equals(vDestPos)) or ((math.abs((vDestPos - vCurPos).x) + math.abs((vDestPos - vCurPos).y) + math.abs((vDestPos - vCurPos).z)) == 1 and not allowDig) then return vDirection, nil end --Якщо ми в точці призначення, або біля цієї точки і немає дозволу на копання.
 
-        vDirToDest = vDestPos - vCurPos -- Визначаємо напрямок для руху
+        local vDirToDest = vDestPos - vCurPos -- Визначаємо напрямок для руху
         vDirToDest = vDirToDest:normalize() -- Нормалізовуємо вектор
         vDirToDest = vDirToDest:round() -- Та заокруглюємо його
 
@@ -263,5 +274,5 @@ function tFunctionLists.goToGPS(vDestPos, vDirection, allowDig, fFuncAftMove) --
     end
 end
 
-print("#Name: ServicePrograms.lua# || #Version: 2.4.5#\n")
+print("#Name: ServicePrograms.lua# || #Version: 2.4.6#\n")
 return tFunctionLists -- Возвращает таблицу, в которой находятся функции
