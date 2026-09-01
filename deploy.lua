@@ -138,11 +138,12 @@ function clone(repo, branch) -->  isError(bool), isError(string) -- Клонир
 		errorFlag = true
         return (print(' Repository "' .. repo .. '" does not contain the following file: ' .. instrList_Name) and false), (' Repository "' .. repo .. '" does not contain the following file: ' .. instrList_Name)
     end                               
-									  
-	-- Прейменовуємо стару папку для подальшого в її видалення
+
+	-- Перевіряємо чи є папка для видаленя, яку не видалили минулий раз, та видаляємо її
 	if fs.exists("deleteFolder_" .. defaultFolderName) then shell.run("delete", "deleteFolder_" .. defaultFolderName) end
+	-- Прейменовуємо стару папку для подальшого в її видалення
 	local renameStatus
-	if fs.exists(defaultFolderName) then renameStatus = shell.run("rename", defaultFolderName, "deleteFolder_" .. defaultFolderName) end -- Переименовываем старую папку, для последующего удаления
+	if fs.exists(defaultFolderName) then renameStatus = shell.run("rename", defaultFolderName, "deleteFolder_" .. defaultFolderName) end
 
 	-- Назначение метки для ПК, если нужно
 	if compLabel == nil then -- Если в пк нет метки, то ...
@@ -158,7 +159,7 @@ function clone(repo, branch) -->  isError(bool), isError(string) -- Клонир
 
 	local isUserProg = false
 	-- Клонирование нужных файлов с репозитория на ПК
-	for fTag, fName in string.gmatch(instrList_File, '#(.-)="(.-)"') do -- Читай и испольняем некоторые с файла инструкции
+	for fTag, fName in string.gmatch(instrList_File, '#(.-)="(.-)"') do -- Читання інструкцій з файла згідно патерну, та обробка далі цих інстрйкцій
 		if (fTag == "!") or (fTag == "Service") or (fTag == "File") then -- Если после ключевого символа "#" есть ("!" или "Service" или "File") то это служебные прогаммы и должны быть установлены везде
 			--TODO: использовать функцию, которая будет посылать данные в консоль, и откправлять на базу, и на КПК
 			print("Receiving: ", fName)
@@ -173,7 +174,7 @@ function clone(repo, branch) -->  isError(bool), isError(string) -- Клонир
 		elseif fTag == "User" then -- Если после ключевого символа "#" есть ("User") то это пользовательские программы, тоисть
 			if not isUserProg then -- Нет установленой пользовательской программы
 				local _, _, fPath = string.find(fName, "sPath='(.-)'") -- Узнаем путь куда устанавливать программу
-				local _, _, fstartupArgs = string.find(fName, "sStartupArgs='(.-)'") -- Узнаем какие аргументы нужно вказывать в файлике с тартапом
+				local _, _, fstartupArgs = string.find(fName, "sStartupArgs='(.-)'") -- Узнаем какие аргументы нужно вказывать в файлике с стартапом
 				--TODO: переробити систему аргументів запуску, або зчитувати, ну і відповідно записати, глобальні інструкції як таблицю з json файлу, або шось інше
 				local _, _, progName = string.find(fPath, "/(.-).lua") -- Извлекаем название программы
 				table.insert(userProgTable, {kProgName = progName, kPath = fPath, kStartupArgs = fstartupArgs})
