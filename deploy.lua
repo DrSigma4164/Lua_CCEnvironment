@@ -77,30 +77,53 @@ local function unserelObj(pathToFile) --> content(Any) | nil, nil | isError(stri
 	else return nil, 'Folder or file ("'..pathToFile..'") does not exists' end -- Помилка: не змогли знайти файл або папку
 end
 
--- Функція запису даних
-local function writeFileandObj(settingTable, curdir, repoPath) --> nil | isError(string) -- Записує файл програми, файл з гітхаба, та стартап
-    if settingTable.S_pinPathGit == nil then return "userProgError: cannot get file from repository." end
-	print("\nReceiving user programm: ", settingTable.S_pinPathGit)
-	local userFile, isError = _GET(repoPath .. settingTable.S_pinPathGit)
-	if isError then
-		print(" ..unexisted")
-		return 'userProgError: cannot get file ("'..settingTable.S_pinPathGit..'") from repository.'
-	else
-		local fout = fs.open(curdir .. defaultFolderName .. settingTable.S_pinProgramm .. ".lua", "w") -- Записуємо файл програми
-		if fout ~= nil then 
-			fout.write(userFile)
-			fout.close()
+-- Функція запису списку файлів, які потрібно стягнути з репозиторію. Кожен елемент tFileList — це
+-- {sGitPath=<шлях у репозиторії>, sLocalPath=<куди записати>}. Проходить по всьому списку одним разом,
+-- замість того щоб тягнути й писати файл одразу в тому місці, де про нього дізнались.
+local function writeFilesList(tFileList, repoPath) --> nil | isError(bool), tStatus(table), errorMsg(string)
+	local tStatus = {} -- По кожному індексу: true, якщо файл записано, false, якщо ні
+	local bHasError = false
+	local sErrorMsg = ""
 
-			local foutSett = fs.open(curdir .. defaultFolderName .. localSettingsList_Name, "w") -- Записуємо в файл налаштувань самі налаштування
-			foutSett.write(textutils.serialise(settingTable))
-			foutSett.close()
-
-			local foutStartup = fs.open("/startup.lua", "w") -- Записуємо в файл стартапу потрібні дані
-			foutStartup.write('shell.run("'..curdir..defaultFolderName..settingTable.S_pinProgramm..'.lua"'..settingTable.S_pinStartArgs..')')
-			foutStartup.close()
-		else return "userProgError: table error in key: S_pinProgramm." end
+	for i, tFileEntry in ipairs(tFileList) do -- Проходимось по кожному запису зі списку
+		print("Receiving: ", tFileEntry.sGitPath)
+		local content, isError = _GET(repoPath .. tFileEntry.sGitPath)
+		if isError then -- Якщо не вдалось стягнути файл з репозиторію
+			print(" ..unexisted")
+			tStatus[i] = false
+			bHasError = true
+			sErrorMsg = sErrorMsg .. 'Cannot get file ("'..tFileEntry.sGitPath..'") from repository.\n'
+		else
+			local fout = fs.open(tFileEntry.sLocalPath, "w") -- Пробуємо відкрити локальний файл для запису
+			if fout ~= nil then
+				fout.write(content)
+				fout.close()
+				tStatus[i] = true
+			else -- Якщо не вдалось відкрити локальний файл
+				tStatus[i] = false
+				bHasError = true
+				sErrorMsg = sErrorMsg .. 'Cannot open a local file ("'..tFileEntry.sLocalPath..'") for writing.\n'
+			end
+		end
 	end
-	
+
+	if bHasError then return true, tStatus, sErrorMsg end -- Якщо була хоча б одна помилка
+	return nil -- Всі файли зі списку записані без помилок
+end
+
+-- Функція запису локальних файлів для обраної user-програми (settings.txt і startup.lua). Це не завантаження
+-- з гіта, тому й окрема функція — сама програма (.lua) тягнеться і пишеться через writeFilesList.
+local function writeProgramSettings(settingTable, curdir) --> nil | isError(string)
+	local foutSett = fs.open(curdir .. defaultFolderName .. localSettingsList_Name, "w") -- Записуємо в файл налаштувань самі налаштування
+	if foutSett == nil then return "userProgError: cannot open settings file for writing." end
+	foutSett.write(textutils.serialise(settingTable))
+	foutSett.close()
+
+	local foutStartup = fs.open("/startup.lua", "w") -- Записуємо в файл стартапу потрібні дані
+	if foutStartup == nil then return "userProgError: cannot open startup file for writing." end
+	foutStartup.write('shell.run("'..curdir..defaultFolderName..settingTable.S_pinProgramm..'.lua"'..settingTable.S_pinStartArgs..')')
+	foutStartup.close()
+
 	return nil
 end
 
@@ -110,6 +133,7 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
     local curdir = shell.dir() .. "/"
 	local compLabel = os.getComputerLabel()
 	local userProgTable = {}
+	local tFileList = {} -- Список усіх файлів, які треба стягнути з репозиторію і куди їх покласти; заповнюється нижче, а стягується одним проходом перед видаленням старої папки
 
 	if branch == nil then -- Якщо в аргументах не була вказана гілка, то встановлюється значення за замовчуванням, "master"
         branch = "master"
@@ -158,19 +182,15 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 	os.setComputerLabel(compLabel)
 
 	local isUserProg = false
+	local chosenProgram -- Таблиця з даними обраної user-програми, якщо користувач її обрав (заповнюється нижче)
+	local chosenProgramFileIndex -- Індекс запису обраної програми в tFileList, щоб потім перевірити саме її статус завантаження
 	-- Клонування потрібних файлів з репозиторію на ПК
 	for fTag, fName in string.gmatch(instrList_File, '#(.-)="(.-)"') do -- Читання інструкцій з файлу згідно з патерном, та обробка цих інструкцій далі
 		if (fTag == "!") or (fTag == "Service") or (fTag == "File") then -- Якщо після ключового символу "#" є ("!" або "Service" або "File"), то це службові програми, і вони мають бути встановлені всюди
 			--TODO: використати функцію, яка буде надсилати дані в консоль, і відправляти на базу, і на КПК
-			print("Receiving: ", fName)
-            local content, isError = _GET(repoPath .. fName)
-            if isError then print(" ..unexisted") else
-				local instalDir = ((fTag == "!") and ("") or (defaultFolderName)) -- "Тернарний оператор", конструкція:(s = condition ? "true" : "false"), пояснення: оператор "and" повертає перше хибне значення серед своїх операндів; якщо обидва операнди істинні, повертається останній з них, а оператор "or" повертає перше істинне значення серед своїх операндів; якщо обидва операнди хибні, повертається останній з них
-																				  -- Якщо "!", то не потрібно переміщати файл у підпапку, але якщо "Service", то потрібно перемістити в папку за замовчуванням
-				local fout = fs.open(curdir .. instalDir .. fName, "w")
-                fout.write(content)
-                fout.close()
-			end
+			local instalDir = ((fTag == "!") and ("") or (defaultFolderName)) -- "Тернарний оператор", конструкція:(s = condition ? "true" : "false"), пояснення: оператор "and" повертає перше хибне значення серед своїх операндів; якщо обидва операнди істинні, повертається останній з них, а оператор "or" повертає перше істинне значення серед своїх операндів; якщо обидва операнди хибні, повертається останній з них
+																			  -- Якщо "!", то не потрібно переміщати файл у підпапку, але якщо "Service", то потрібно перемістити в папку за замовчуванням
+			table.insert(tFileList, {sGitPath = fName, sLocalPath = curdir .. instalDir .. fName}) -- Додаємо файл у список на завантаження, самого завантаження тут ще не відбувається
 		elseif fTag == "User" then -- Якщо після ключового символу "#" є ("User"), то це користувацькі програми, тобто
 			if not isUserProg then -- Немає встановленої користувацької програми
 				local _, _, fPath = string.find(fName, "sPath='(.-)'") -- Дізнаємось шлях, куди встановлювати програму
@@ -180,13 +200,7 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 				table.insert(userProgTable, {kProgName = progName, kPath = fPath, kStartupArgs = fstartupArgs})
 
 				if progName == compLabel and false then -- Якщо є програма з такою ж назвою, як і мітка ПК, то ..
-					print("\nReceiving user programm: ", fPath)
-					local content, isError = _GET(repoPath .. fPath)
-					if isError then print(" ..unexisted") else
-						local fout = fs.open(curdir .. defaultFolderName .. progName .. ".lua", "w")
-						fout.write(content)
-						fout.close()
-					end
+					table.insert(tFileList, {sGitPath = fPath, sLocalPath = curdir .. defaultFolderName .. progName .. ".lua"}) -- Так само додаємо в загальний список, а не тягнемо одразу
 					isUserProg = true -- Робимо позначку, що програму знайдено
 					userProgTable = {} -- Видаляємо вже непотрібну таблицю
 				end
@@ -243,18 +257,38 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 
 		-- Виконання вибраних користувачем дій
 		if inputValue > 0 then
-			local content = {S_pinProgramm = userProgTable[inputValue].kProgName, S_pinPathGit = userProgTable[inputValue].kPath, S_pinStartArgs = userProgTable[inputValue].kStartupArgs} -- Нова таблиця з даними, S означає сервісні дані
-
-			local writeSIsError= writeFileandObj(content, curdir, repoPath) -- Запис у файли
-			if writeSIsError then print(writeSIsError) errorFlag = true
-			else print('\nProgramm "'..content.S_pinProgramm..'" was connected to "'..os.getComputerLabel()..'" label.') end
+			chosenProgram = {S_pinProgramm = userProgTable[inputValue].kProgName, S_pinPathGit = userProgTable[inputValue].kPath, S_pinStartArgs = userProgTable[inputValue].kStartupArgs} -- Нова таблиця з даними, S означає сервісні дані
+			table.insert(tFileList, {sGitPath = chosenProgram.S_pinPathGit, sLocalPath = curdir .. defaultFolderName .. chosenProgram.S_pinProgramm .. ".lua"}) -- Додаємо обрану програму в той самий загальний список
+			chosenProgramFileIndex = #tFileList -- Запам'ятовуємо, під яким індексом вона в списку, щоб потім перевірити саме її статус
 		elseif inputValue == 0 then
 			print("No user programm has been downloaded.") -- Якщо ми не хочемо завантажувати програми
 		end
 	end
 
-	-- Видалення старої папки
-	if renameStatus then shell.run("delete", "deleteFolder_" .. defaultFolderName) end -- Видаляємо стару папку, якщо вона існувала
+	-- Завантаження всього, що назбиралось у tFileList, одним проходом — і службові файли, і обрана user-програма
+	local isDownloadError, tDownloadStatus, downloadErrorMsg = writeFilesList(tFileList, repoPath)
+	if isDownloadError then
+		print(downloadErrorMsg)
+		errorFlag = true
+	end
+
+	if chosenProgram ~= nil then -- Якщо ми обирали user-програму — settings.txt і startup.lua пишемо лише якщо сама програма реально завантажилась
+		if (not isDownloadError) or (tDownloadStatus[chosenProgramFileIndex]) then
+			local writeSettErr = writeProgramSettings(chosenProgram, curdir)
+			if writeSettErr then print(writeSettErr) errorFlag = true
+			else print('\nProgramm "'..chosenProgram.S_pinProgramm..'" was connected to "'..os.getComputerLabel()..'" label.') end
+		else
+			print('\nProgramm "'..chosenProgram.S_pinProgramm..'" was NOT connected: could not download the program file.')
+			errorFlag = true
+		end
+	end
+
+	--TODO: подумати, що робити з "deleteFolder_", якщо isDownloadError — зараз вона просто лишається на диску як резервна копія,
+	--      але наступний запуск deploy.lua одразу видалить її на самому початку (крок з "Перевіряємо чи є папка для видалення"),
+	--      навіть якщо той наступний запуск теж не вдасться. Треба або зберігати ознаку невдалого запуску окремо, або якось інакше.
+
+	-- Видалення старої папки (лишаємо її на диску, якщо під час завантаження була помилка — про всяк випадок)
+	if renameStatus and not isDownloadError then shell.run("delete", "deleteFolder_" .. defaultFolderName) end -- Видаляємо стару папку, якщо вона існувала і все завантажилось без помилок
 	return true, ""
 end
 
