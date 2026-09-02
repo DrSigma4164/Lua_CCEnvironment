@@ -248,10 +248,12 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 		end
 
 		---Очікуємо вводу користувача, або значення за замовчуванням
+		local bHasExistingProgram = fs.exists("/startup.lua") -- Якщо на ПК вже є startup.lua, то якась програма вже налаштована — можна безпечно взяти "0" за замовчуванням; якщо немає, це "чистий" ПК, і чекаємо явний вибір без обмеження часу
+
 		local inputValue
 		repeat -- Цикл з післяумовою для перевірки введеного значення
 			write("\n> ")
-			inputValue = tonumber(fReadData("0", 3))
+			inputValue = tonumber(fReadData((bHasExistingProgram and "0" or nil), 3))
 			if ((inputValue > #userProgTable) or (inputValue < 0)) then print("Please enter again: ") end
 		until ((inputValue <= #userProgTable) and (inputValue >= 0))
 
