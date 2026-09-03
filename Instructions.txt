@@ -2,7 +2,6 @@
 !Branch="master"
 
 #!="deploy.lua"
-#!="Instructions.txt"
 #Service="ServicePrograms.lua"
 #User="sPath='User/HelloWorld.lua', bIsNeedStrartup='', sStartupArgs=''"
 #User="sPath='User/TestTurtle.lua', bIsNeedStrartup='',  sStartupArgs=''"
