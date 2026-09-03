@@ -1,5 +1,6 @@
 local instrList_Name = "Instructions.txt"
 local localSettingsList_Name = "settings.txt"
+local deploySettingsFileName = "deploysettings.txt"
 local prefix = "https://raw.githubusercontent.com/"
 local defaultFolderName = "CCEnv/"
 
@@ -63,18 +64,27 @@ local function fWaitOrSkip(nTimerTime, aTimerAnsw, aSkipAnsw, fEventCher) -->  c
 	end
 end
 
--- Функція десеріалізації даних
-local function unserelObj(pathToFile) --> content(Any) | nil, nil | isError(string) -- Читає дані з файлу і проводить десеріалізацію
-    if fs.exists(pathToFile) == true then -- Якщо є стара папка, і файл з налаштуваннями відкрився, то пробуємо шукати налаштування в ній
-		local fin = fs.open(pathToFile, "r") -- Пробуємо відкрити локальний файл з інструкціями
-		if fin ~= nil then -- Якщо файл старих локальних налаштувань відкрився
-			local unserializeObj = textutils.unserialize(fin.readAll()) -- Пробуємо читати з файлу з налаштуваннями
+-- Функція десеріалізації даних з файлу
+local function unserialFromFile(pathToFile) --> content(Any) | nil, nil | isError(string) -- Читає дані з файлу і проводить десеріалізацію
+    if fs.exists(pathToFile) == true then -- Якщо файл існує, то пробуємо читати дані з нього
+		local fin = fs.open(pathToFile, "r") -- Пробуємо відкрити локальний файл
+		if fin ~= nil then -- Якщо файл відкрився
+			local unserializeObj = textutils.unserialize(fin.readAll()) -- Пробуємо читати з файлу
 			fin.close()
 			if unserializeObj ~= nil then
 				return unserializeObj, nil
 			else return nil, 'Cannot unserialize data into object ("'..pathToFile..'")' end -- Помилка: не змогли десеріалізувати дані
 		else return nil, 'Cannot open a file ("'..pathToFile..'")' end -- Помилка: не змогли відкрити файл
 	else return nil, 'Folder or file ("'..pathToFile..'") does not exists' end -- Помилка: не змогли знайти файл або папку
+end
+
+-- Функція серіалізації даних у файл
+local function serialToFile(pathToFile, obj) --> nil | isError(string) -- Серіалізує таблицю і записує її у вказаний файл
+	local fout = fs.open(pathToFile, "w") -- Пробуємо відкрити локальний файл для запису
+	if fout == nil then return 'Cannot open a file ("'..pathToFile..'") for writing' end
+	fout.write(textutils.serialise(obj))
+	fout.close()
+	return nil
 end
 
 -- Функція запису списку файлів, які потрібно стягнути з репозиторію. Кожен елемент tFileList — це
@@ -114,10 +124,8 @@ end
 -- Функція запису локальних файлів для обраної user-програми (settings.txt і startup.lua). Це не завантаження
 -- з гіта, тому й окрема функція — сама програма (.lua) тягнеться і пишеться через writeFilesList.
 local function writeProgramSettings(settingTable, curdir) --> nil | isError(string)
-	local foutSett = fs.open(curdir .. defaultFolderName .. localSettingsList_Name, "w") -- Записуємо в файл налаштувань самі налаштування
-	if foutSett == nil then return "userProgError: cannot open settings file for writing." end
-	foutSett.write(textutils.serialise(settingTable))
-	foutSett.close()
+	local sSettErr = serialToFile(curdir .. defaultFolderName .. localSettingsList_Name, settingTable) -- Записуємо в файл налаштувань самі налаштування
+	if sSettErr then return sSettErr end
 
 	local foutStartup = fs.open("/startup.lua", "w") -- Записуємо в файл стартапу потрібні дані
 	if foutStartup == nil then return "userProgError: cannot open startup file for writing." end
@@ -140,14 +148,11 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
     end
 
 	-- Якщо в аргументах не був вказаний репозиторій
-    if repo == nil then 
-	    local fin = fs.open(curdir .. instrList_Name, "r") -- Пробуємо відкрити файл
-        if fin ~= nil then -- Якщо у файлах на ПК є файл інструкцій, тобто ця програма вже успішно виконувалась            
-			local _, _, r = string.find(fin.readLine(), '!Repository="(.-)"') -- Читаємо перший рядок, в якому має знаходитись ім'я репозиторію
-			local _, _, b = string.find(fin.readLine(), '!Branch="(.-)"') -- Читаємо наступний рядок, в якому має знаходитись гілка
-            fin.close()
-            return clone(r, b)
-        else -- Не вдалось знайти локальний файл попереднього запуску
+    if repo == nil then
+		local tDeploySettings, dsErr = unserialFromFile(curdir .. deploySettingsFileName) -- Пробуємо прочитати файл стану деплою з минулого запуску
+        if (tDeploySettings ~= nil) and (tDeploySettings.Repository ~= nil) then -- Якщо файл є і в ньому вказано репозиторій, тобто ця програма вже успішно виконувалась
+            return clone(tDeploySettings.Repository, tDeploySettings.Branch)
+        else -- Не вдалось знайти файл стану деплою з попереднього запуску
             print("Please specify repository in arguments")
 			errorFlag = true
             return false, "No repository name"
@@ -157,12 +162,16 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 	-- Відкриваємо репозиторій
     local repoPath = repo .. "/" .. branch .. "/" -- Шлях у репозиторії
     local instrList_File, instrList_isError = _GET(repoPath .. instrList_Name) -- Спроба завантажити файл з інструкціями
+	local tDeploySettings = unserialFromFile(curdir .. deploySettingsFileName) -- Пробуємо прочитати файл стану деплою з минулого запуску (може повернути nil, якщо його ще нема)
 
     if instrList_isError then -- Якщо не вдалось завантажити інструкції
 		errorFlag = true
         return (print(' Repository "' .. repo .. '" does not contain the following file: ' .. instrList_Name) and false), (' Repository "' .. repo .. '" does not contain the following file: ' .. instrList_Name)
     end                               
 									  
+	os.queueEvent("settings_driver_in", nil, "stop") -- Призупиняємо роботу драйвера налаштувань, якщо він працює, і
+	sleep(1) -- чекаємо 1 секунду, щоб він завершився
+
 	-- Перевіряємо чи є папка для видалення, яку не видалили минулого разу, та видаляємо її
 	if fs.exists("deleteFolder_" .. defaultFolderName) then shell.run("delete", "deleteFolder_" .. defaultFolderName) end
 	-- Перейменовуємо стару папку для подальшого її видалення
@@ -181,9 +190,7 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 	until tempCompLabel ~= nil
 	os.setComputerLabel(compLabel)
 
-	local isUserProg = false
-	local chosenProgram -- Таблиця з даними обраної user-програми, якщо користувач її обрав (заповнюється нижче)
-	local chosenProgramFileIndex -- Індекс запису обраної програми в tFileList, щоб потім перевірити саме її статус завантаження
+	local existingProgIndex -- Індекс в userProgTable, якщо раніше обрана програма й досі є серед того, що зараз реально є в репозиторії
 	-- Клонування потрібних файлів з репозиторію на ПК
 	for fTag, fName in string.gmatch(instrList_File, '#(.-)="(.-)"') do -- Читання інструкцій з файлу згідно з патерном, та обробка цих інструкцій далі
 		if (fTag == "!") or (fTag == "Service") or (fTag == "File") then -- Якщо після ключового символу "#" є ("!" або "Service" або "File"), то це службові програми, і вони мають бути встановлені всюди
@@ -192,79 +199,56 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 																			  -- Якщо "!", то не потрібно переміщати файл у підпапку, але якщо "Service", то потрібно перемістити в папку за замовчуванням
 			table.insert(tFileList, {sGitPath = fName, sLocalPath = curdir .. instalDir .. fName}) -- Додаємо файл у список на завантаження, самого завантаження тут ще не відбувається
 		elseif fTag == "User" then -- Якщо після ключового символу "#" є ("User"), то це користувацькі програми, тобто
-			if not isUserProg then -- Немає встановленої користувацької програми
-				local _, _, fPath = string.find(fName, "sPath='(.-)'") -- Дізнаємось шлях, куди встановлювати програму
-				local _, _, fstartupArgs = string.find(fName, "sStartupArgs='(.-)'") -- Дізнаємось, які аргументи потрібно вказувати у файлику зі стартапом
-				--TODO: переробити систему аргументів запуску, або зчитувати, ну і відповідно записати, глобальні інструкції як таблицю з json файлу, або щось інше
-				local _, _, progName = string.find(fPath, "/(.-).lua") -- Витягуємо назву програми
-				table.insert(userProgTable, {kProgName = progName, kPath = fPath, kStartupArgs = fstartupArgs})
-
-				if progName == compLabel and false then -- Якщо є програма з такою ж назвою, як і мітка ПК, то ..
-					table.insert(tFileList, {sGitPath = fPath, sLocalPath = curdir .. defaultFolderName .. progName .. ".lua"}) -- Так само додаємо в загальний список, а не тягнемо одразу
-					isUserProg = true -- Робимо позначку, що програму знайдено
-					userProgTable = {} -- Видаляємо вже непотрібну таблицю
-				end
-
-			end
+			local _, _, fPath = string.find(fName, "sPath='(.-)'") -- Дізнаємось шлях, куди встановлювати програму
+			local _, _, fstartupArgs = string.find(fName, "sStartupArgs='(.-)'") -- Дізнаємось, які аргументи потрібно вказувати у файлику зі стартапом
+			--TODO: переробити систему аргументів запуску, або зчитувати, ну і відповідно записати, глобальні інструкції як таблицю з json файлу, або щось інше
+			local _, _, progName = string.find(fPath, "/(.-).lua") -- Витягуємо назву програми
+			table.insert(userProgTable, {kProgName = progName, kPath = fPath, kStartupArgs = fstartupArgs})
+			if (tDeploySettings ~= nil) and (progName == tDeploySettings.S_pinProgramm) then existingProgIndex = #userProgTable end -- Якщо це та сама програма, що вже стояла на цьому ПК раніше — запам'ятовуємо її індекс
 		else -- Неправильно складений або невідомий тег
 
 		end
     end
 
-	-- Обробка таблиці з користувацькими програмами, якщо потрібно
-	if not isUserProg then -- Якщо ми не знайшли потрібної програми
-		local sDefaultProgramm -- Змінна для того, щоб задати значення за замовчуванням в залежності від ситуації.
-
-		os.queueEvent("settings_driver_in", nil, "stop") -- Призупиняємо роботу драйвера налаштувань, якщо він працює, і
-		sleep(1) -- чекаємо 1 секунду, щоб він завершився
-		print("Test after STOP")  --DEBUG
-
-		local tSettings, errMsg = unserelObj(curdir .. "deleteFolder_" .. defaultFolderName .. localSettingsList_Name) -- Пробуємо десеріалізувати дані з файлу налаштувань
-
-		if ((tSettings ~= nil) and (tSettings.S_pinProgramm ~= nil) and false) then -- Якщо дані десеріалізувались і в таблиці є дані програми, то ...
-			print(' - The selected program for this PC is: "' .. tSettings.S_pinProgramm .. '".')
-			sDefaultProgramm = tSettings.S_pinProgramm
-			--TODO: зробити перенесення локальних налаштувань
-		else -- Якщо ні, то робимо новий файл налаштувань
-			--TODO: зробити створення нового файлу для локальних налаштувань
-			if errMsg == nil then errMsg = "" end
-			print(' - Error: "' .. errMsg .. '". Select a program number from the list below, or 0 to skip:')
+	 ---Вивід списку програм
+	print((existingProgIndex and (' - The selected program for this PC is: "' .. tDeploySettings.S_pinProgramm .. '".')) or ' - Select a program number from the list below, or 0 to skip:')
+	local _, nDisplayHight = term.getSize()
+	for k, v in pairs(userProgTable) do
+		local _, nCursPosY = term.getCursorPos() -- Позиція, де курсор БУДЕ ДРУКУВАТИ
+		if nCursPosY == (nDisplayHight) then --Якщо курсор уже на останньому рядку
+			term.scroll(1) -- Піднімаємо весь текст вгору
+			term.setCursorPos(1, nDisplayHight) -- Ставимо курсор на початок останнього рядка
+			term.write("Wait or press any key") -- Пишемо підказку
+			 -- чекаємо пів секунди або запуску функції, в якій, якщо функція поверне true, тоді значення "aSkipAnsw" повернеться як результат першої функції "fWaitOrSkip()"
+			fWaitOrSkip(0.5, true, true, function(eventTbl)  if ((eventTbl[1] == "key")) then print("TEST1111") return true end end)
+			term.clearLine() -- Очищаємо рядок, на якому була підказка
+			term.setCursorPos(1, nDisplayHight) -- Ставимо курсор на початок останнього рядка
 		end
+		print(" ["..k.."] ".."Name: "..v.kProgName)
+	end
 
-		 ---Вивід списку програм
-		local _, nDisplayHight = term.getSize()
-		for k, v in pairs(userProgTable) do
-			local _, nCursPosY = term.getCursorPos() -- Позиція, де курсор БУДЕ ДРУКУВАТИ
-			if nCursPosY == (nDisplayHight) then --Якщо курсор уже на останньому рядку
-				term.scroll(1) -- Піднімаємо весь текст вгору
-				term.setCursorPos(1, nDisplayHight) -- Ставимо курсор на початок останнього рядка
-				term.write("Wait or press any key") -- Пишемо підказку
-				 -- чекаємо пів секунди або запуску функції, в якій, якщо функція поверне true, тоді значення "aSkipAnsw" повернеться як результат першої функції "fWaitOrSkip()"
-				fWaitOrSkip(0.5, true, true, function(eventTbl)  if ((eventTbl[1] == "key")) then print("TEST1111") return true end end)
-				term.clearLine() -- Очищаємо рядок, на якому була підказка
-				term.setCursorPos(1, nDisplayHight) -- Ставимо курсор на початок останнього рядка
-			end
-			print(" ["..k.."] ".."Name: "..v.kProgName)
-		end
+	---Очікуємо вводу користувача, або значення за замовчуванням
+	local inputValue
+	repeat -- Цикл з післяумовою для перевірки введеного значення
+		write("\n> ")
+		inputValue = tonumber(fReadData((existingProgIndex and "0" or nil), 3)) -- Якщо раніше вже була обрана й досі існуюча програма — можна безпечно взяти "0" за замовчуванням; якщо ні, чекаємо явний вибір без обмеження часу
+		if ((inputValue > #userProgTable) or (inputValue < 0)) then print("Please enter again: ") end
+	until ((inputValue <= #userProgTable) and (inputValue >= 0))
 
-		---Очікуємо вводу користувача, або значення за замовчуванням
-		local bHasExistingProgram = fs.exists("/startup.lua") -- Якщо на ПК вже є startup.lua, то якась програма вже налаштована — можна безпечно взяти "0" за замовчуванням; якщо немає, це "чистий" ПК, і чекаємо явний вибір без обмеження часу
-
-		local inputValue
-		repeat -- Цикл з післяумовою для перевірки введеного значення
-			write("\n> ")
-			inputValue = tonumber(fReadData((bHasExistingProgram and "0" or nil), 3))
-			if ((inputValue > #userProgTable) or (inputValue < 0)) then print("Please enter again: ") end
-		until ((inputValue <= #userProgTable) and (inputValue >= 0))
-
-		-- Виконання вибраних користувачем дій
-		if inputValue > 0 then
-			chosenProgram = {S_pinProgramm = userProgTable[inputValue].kProgName, S_pinPathGit = userProgTable[inputValue].kPath, S_pinStartArgs = userProgTable[inputValue].kStartupArgs} -- Нова таблиця з даними, S означає сервісні дані
-			table.insert(tFileList, {sGitPath = chosenProgram.S_pinPathGit, sLocalPath = curdir .. defaultFolderName .. chosenProgram.S_pinProgramm .. ".lua"}) -- Додаємо обрану програму в той самий загальний список
-			chosenProgramFileIndex = #tFileList -- Запам'ятовуємо, під яким індексом вона в списку, щоб потім перевірити саме її статус
-		elseif inputValue == 0 then
-			print("No user programm has been downloaded.") -- Якщо ми не хочемо завантажувати програми
-		end
+	-- Виконання вибраних користувачем дій
+	local chosenProgram -- Таблиця з даними обраної user-програми, якщо користувач її обрав
+	local chosenProgramFileIndex -- Індекс запису обраної програми в tFileList, щоб потім перевірити саме її статус завантаження
+	if inputValue > 0 then -- Ввели номер програми зі списку
+		chosenProgram = {S_pinProgramm = userProgTable[inputValue].kProgName, S_pinPathGit = userProgTable[inputValue].kPath, S_pinStartArgs = userProgTable[inputValue].kStartupArgs} -- Нова таблиця з даними, S означає сервісні дані
+		table.insert(tFileList, {sGitPath = chosenProgram.S_pinPathGit, sLocalPath = curdir .. defaultFolderName .. chosenProgram.S_pinProgramm .. ".lua"}) -- Додаємо обрану програму в той самий загальний список
+		chosenProgramFileIndex = #tFileList -- Запам'ятовуємо, під яким індексом вона в списку, щоб потім перевірити саме її статус
+	elseif existingProgIndex ~= nil then -- Пропустили вибір ("0"), але раніше обрана програма й досі є в списку з гіта — лишаємо її
+		local v = userProgTable[existingProgIndex]
+		chosenProgram = {S_pinProgramm = v.kProgName, S_pinPathGit = v.kPath, S_pinStartArgs = v.kStartupArgs}
+		table.insert(tFileList, {sGitPath = chosenProgram.S_pinPathGit, sLocalPath = curdir .. defaultFolderName .. chosenProgram.S_pinProgramm .. ".lua"})
+		chosenProgramFileIndex = #tFileList
+	else -- "0" і раніше обраної програми немає
+		print("No user programm has been selected.") -- Якщо ми не хочемо обирати програму
 	end
 
 	-- Завантаження всього, що назбиралось у tFileList, одним проходом — і службові файли, і обрана user-програма
@@ -277,7 +261,11 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 	if chosenProgram ~= nil then -- Якщо ми обирали user-програму — settings.txt і startup.lua пишемо лише якщо сама програма реально завантажилась
 		if (not isDownloadError) or (tDownloadStatus[chosenProgramFileIndex]) then
 			local writeSettErr = writeProgramSettings(chosenProgram, curdir)
-			if writeSettErr then print(writeSettErr) errorFlag = true
+			local writeDeployStateErr = serialToFile(curdir .. deploySettingsFileName, {Repository = repo, Branch = branch, S_pinProgramm = chosenProgram.S_pinProgramm, S_pinPathGit = chosenProgram.S_pinPathGit, S_pinStartArgs = chosenProgram.S_pinStartArgs}) -- Запам'ятовуємо для наступного запуску deploy.lua, що саме тут стоїть
+			if writeSettErr or writeDeployStateErr then
+				if writeSettErr then print(writeSettErr) end
+				if writeDeployStateErr then print(writeDeployStateErr) end
+				errorFlag = true
 			else print('\nProgramm "'..chosenProgram.S_pinProgramm..'" was connected to "'..os.getComputerLabel()..'" label.') end
 		else
 			print('\nProgramm "'..chosenProgram.S_pinProgramm..'" was NOT connected: could not download the program file.')
@@ -297,5 +285,5 @@ end
 
 -- Безпосередній запуск "розпаковки" середовища з GitHub
 local args = {...}
-print("#Name: deploy.lua# || #Version: 2.2.5#\n")
+print("#Name: deploy.lua# || #Version: 2.3.0#\n")
 clone(args[1], args[2])
