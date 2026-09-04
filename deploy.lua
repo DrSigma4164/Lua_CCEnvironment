@@ -227,15 +227,16 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 		print(" ["..k.."] ".."Name: "..v.kProgName)
 	end
 
-	---Очікуємо вводу користувача, або значення за замовчуванням
-	local inputValue
-	repeat -- Цикл з післяумовою для перевірки введеного значення
-		write("\n> ")
-		inputValue = tonumber(fReadData((existingProgIndex and "0" or nil), 3)) -- Якщо раніше вже була обрана й досі існуюча програма — можна безпечно взяти "0" за замовчуванням; якщо ні, чекаємо явний вибір без обмеження часу
-		if ((inputValue > #userProgTable) or (inputValue < 0)) then print("Please enter again: ") end
-	until ((inputValue <= #userProgTable) and (inputValue >= 0))
-	print() -- Переносимо рядок: якщо ввід стався за замовчуванням (тайм-аут, без жодного натискання), курсор лишається одразу після "> ", і наступний текст в'їжджав би в той самий рядок
+		---Очікуємо вводу користувача, або значення за замовчуванням
+		local bHasExistingProgram = fs.exists("/startup.lua") -- Якщо на ПК вже є startup.lua, то якась програма вже налаштована — можна безпечно взяти "0" за замовчуванням; якщо немає, це "чистий" ПК, і чекаємо явний вибір без обмеження часу
 
+		local inputValue
+		repeat -- Цикл з післяумовою для перевірки введеного значення
+			write("\n> ")
+			inputValue = tonumber(fReadData((bHasExistingProgram and "0" or nil), 3))
+			if ((inputValue > #userProgTable) or (inputValue < 0)) then print("Please enter again: ") end
+		until ((inputValue <= #userProgTable) and (inputValue >= 0))
+		print() -- Переносимо рядок: якщо ввід стався за замовчуванням (тайм-аут, без жодного натискання), курсор лишається одразу після "> ", і наступний текст в'їжджав би в той самий рядок
 	-- Виконання вибраних користувачем дій
 	local chosenProgram -- Таблиця з даними обраної user-програми, якщо користувач її обрав
 	local chosenProgramFileIndex -- Індекс запису обраної програми в tFileList, щоб потім перевірити саме її статус завантаження
