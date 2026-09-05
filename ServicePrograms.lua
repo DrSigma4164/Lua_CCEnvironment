@@ -13,7 +13,7 @@ function tFunctionLists.fSettingsDriver() --> funcStatus(boolean), returnMsg(str
     local localSettingsList_Name = "settings.txt"
 
     -- Зчитування попередньо збережених налаштувань
-    local fin, _ = fs.open(defaultFolderName .. localSettingsList_Name, "r") -- Пробуємо відкрити файл з налаштуваннями
+    local fin, _ = fs.open("/" .. defaultFolderName .. localSettingsList_Name, "r") -- Пробуємо відкрити файл з налаштуваннями (абсолютний шлях, щоб не залежати від поточної робочої директорії програми)
     if fin ~= nil then -- якщо файл відкрився
         local sContent = fin.readAll() -- Читаємо таблицю з файлу
         fin.close()
@@ -35,14 +35,14 @@ function tFunctionLists.fSettingsDriver() --> funcStatus(boolean), returnMsg(str
         elseif ((eventCommand == "set")) then -- Або потрібно встановити дані
             tSettingTable[eventTableId] = eventArgs
             local bErrorFlag = false
-            local fout, _ = fs.open(defaultFolderName .. "temp" .. localSettingsList_Name, "w") -- Пробуємо відкрити файл з налаштуваннями
+            local fout, _ = fs.open("/" .. defaultFolderName .. "temp" .. localSettingsList_Name, "w") -- Пробуємо відкрити файл з налаштуваннями
             if fout ~= nil then --Якщо файл відкрився
                 local seriObj = textutils.serialize(tSettingTable)
                 if seriObj ~= nil then
                     fout.write(seriObj)
                     fout.close()
-                    shell.run("delete", defaultFolderName .. localSettingsList_Name)
-                    if shell.run("rename", defaultFolderName .. "temp" .. localSettingsList_Name, defaultFolderName .. localSettingsList_Name) then bErrorFlag = true end
+                    shell.run("delete", "/" .. defaultFolderName .. localSettingsList_Name)
+                    if shell.run("rename", "/" .. defaultFolderName .. "temp" .. localSettingsList_Name, "/" .. defaultFolderName .. localSettingsList_Name) then bErrorFlag = true end
                 else
                     fout.close()
                 end
@@ -274,5 +274,5 @@ function tFunctionLists.goToGPS(vDestPos, vDirection, allowDig, fFuncAftMove) --
     end
 end
 
-print("#Name: ServicePrograms.lua# || #Version: 2.4.6#\n")
+print("#Name: ServicePrograms.lua# || #Version: 2.4.7#\n")
 return tFunctionLists -- Повертає таблицю, в якій знаходяться функції

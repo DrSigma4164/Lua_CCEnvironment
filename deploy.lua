@@ -1,6 +1,7 @@
 local instrList_Name = "Instructions.txt"
 local localSettingsList_Name = "settings.txt"
 local deploySettingsFileName = "deploysettings.txt"
+local deployFailedMarkerName = "deployfailed.marker"
 local prefix = "https://raw.githubusercontent.com/"
 local defaultFolderName = "CCEnv/"
 
@@ -82,7 +83,7 @@ end
 local function serialToFile(pathToFile, obj) --> nil | isError(string) -- Серіалізує таблицю і записує її у вказаний файл
 	local fout = fs.open(pathToFile, "w") -- Пробуємо відкрити локальний файл для запису
 	if fout == nil then return 'Cannot open a file ("'..pathToFile..'") for writing' end
-	fout.write(textutils.serialise(obj))
+	fout.write(textutils.serialize(obj))
 	fout.close()
 	return nil
 end
@@ -172,11 +173,18 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 	os.queueEvent("settings_driver_in", nil, "stop") -- Призупиняємо роботу драйвера налаштувань, якщо він працює, і
 	sleep(1) -- чекаємо 1 секунду, щоб він завершився
 
-	-- Перевіряємо чи є папка для видалення, яку не видалили минулого разу, та видаляємо її
-	if fs.exists("deleteFolder_" .. defaultFolderName) then shell.run("delete", "deleteFolder_" .. defaultFolderName) end
-	-- Перейменовуємо стару папку для подальшого її видалення
+	-- Перевіряємо, чи минулий запуск лишив позначку невдалого завантаження — якщо так, стара папка є єдиною робочою копією,
+	-- і танець з перейменуванням тут небезпечний: пишемо файли прямо в наявну CCEnv/, не чіпаючи deleteFolder_
+	local bPreviousRunFailed = fs.exists(curdir .. deployFailedMarkerName)
 	local renameStatus
-	if fs.exists(defaultFolderName) then renameStatus = shell.run("rename", defaultFolderName, "deleteFolder_" .. defaultFolderName) end
+	if bPreviousRunFailed then
+		print(" - Previous run did not finish cleanly, working in place to avoid touching the last known-good backup.")
+	else
+		-- Перевіряємо чи є папка для видалення, яку не видалили минулого разу, та видаляємо її
+		if fs.exists("deleteFolder_" .. defaultFolderName) then shell.run("delete", "deleteFolder_" .. defaultFolderName) end
+		-- Перейменовуємо стару папку для подальшого її видалення
+		if fs.exists(defaultFolderName) then renameStatus = shell.run("rename", defaultFolderName, "deleteFolder_" .. defaultFolderName) end
+	end
 
 	-- Призначення мітки для ПК, якщо потрібно
 	if compLabel == nil then -- Якщо у ПК немає мітки, то ...
@@ -257,6 +265,10 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 	if isDownloadError then
 		print(downloadErrorMsg)
 		errorFlag = true
+		if not bPreviousRunFailed then -- Позначаємо, що цей запуск не вдався, щоб наступний запуск не видалив резервну копію, не розібравшись
+			local fout = fs.open(curdir .. deployFailedMarkerName, "w")
+			if fout ~= nil then fout.write("1") fout.close() end
+		end
 	end
 
 	if chosenProgram ~= nil then -- Якщо ми обирали user-програму — settings.txt і startup.lua пишемо лише якщо сама програма реально завантажилась
@@ -274,17 +286,16 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 		end
 	end
 
-	--TODO: подумати, що робити з "deleteFolder_", якщо isDownloadError — зараз вона просто лишається на диску як резервна копія,
-	--      але наступний запуск deploy.lua одразу видалить її на самому початку (крок з "Перевіряємо чи є папка для видалення"),
-	--      навіть якщо той наступний запуск теж не вдасться. Треба або зберігати ознаку невдалого запуску окремо, або якось інакше.
-
-	-- Видалення старої папки (лишаємо її на диску, якщо під час завантаження була помилка — про всяк випадок)
-	if renameStatus and not isDownloadError then shell.run("delete", "deleteFolder_" .. defaultFolderName) end -- Видаляємо стару папку, якщо вона існувала і все завантажилось без помилок
+	-- Видалення старої папки та позначки невдалого запуску (лишаємо все на диску, якщо під час завантаження була помилка — про всяк випадок)
+	if not isDownloadError then
+		if renameStatus or bPreviousRunFailed then shell.run("delete", "deleteFolder_" .. defaultFolderName) end -- Видаляємо стару папку, якщо вона існувала (перейменували цього разу, або лишилась з невдалого минулого запуску) і все завантажилось без помилок
+		if bPreviousRunFailed then shell.run("delete", curdir .. deployFailedMarkerName) end -- Успішно відновились після невдалого запуску — прибираємо позначку
+	end
 	return true, ""
 end
 
 
 -- Безпосередній запуск "розпаковки" середовища з GitHub
 local args = {...}
-print("#Name: deploy.lua# || #Version: 2.3.0#\n")
+print("#Name: deploy.lua# || #Version: 2.3.2#\n")
 clone(args[1], args[2])
