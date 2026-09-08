@@ -3,6 +3,7 @@ local localSettingsList_Name = "settings.txt"
 local deploySettingsFileName = "deploysettings.txt"
 local deployFailedMarkerName = "deployfailed.marker"
 local prefix = "https://raw.githubusercontent.com/"
+local apiPrefix = "https://api.github.com/repos/"
 local defaultFolderName = "CCEnv/"
 
 local expect = require "cc.expect"
@@ -10,16 +11,19 @@ local expect = require "cc.expect"
 --TODO: Нотатка: local modem = peripheral.find("modem") or error("No modem attached", 0)
 
 -- Функція завантаження даних
-local function _GET(path) --> content, nil | nil, isError(string) -- Читає дані з GitHub
-    local handle = http.get(prefix .. path)
-	
-    if (handle == nil) or (handle.getResponseCode() ~= 200) then
-        return nil, '"' .. path .. '" not responding'
-    end
-	
-    local content = handle.readAll()
-    handle.close()
-    return content, nil
+local function _GET(path) --> content, nil | nil, isError(string) -- Читає дані з GitHub, максимум 3 спроби при мережевій помилці
+	local isError
+	for i = 1, 3 do
+		local handle = http.get(prefix .. path)
+		if (handle ~= nil) and (handle.getResponseCode() == 200) then
+			local content = handle.readAll()
+			handle.close()
+			return content, nil
+		end
+		isError = '"' .. path .. '" not responding'
+		print(isError)
+	end
+	return nil, isError
 end
 
 --Функція зчитування даних з клавіатури за n секунд, або повернення значення за замовчуванням
@@ -88,32 +92,66 @@ local function serialToFile(pathToFile, obj) --> nil | isError(string) -- Сер
 	return nil
 end
 
+-- Функція отримання git-хешів усіх файлів репозиторію одним запитом до GitHub API (Git Trees), щоб потім
+-- порівняти їх зі збереженими з минулого разу й не перезавантажувати те, що не змінилось. Якщо API з якоїсь
+-- причини недоступне (інший домен, ліміт запитів, немає textutils.unserialiseJSON тощо) — просто повертає помилку,
+-- а виклик знає, що тоді треба качати все, як і раніше.
+local function getRepoFileHashes(repo, branch) --> tHashes(table), nil | nil, isError(string)
+	local bOk, result = pcall(function()
+		local handle = http.get(apiPrefix .. repo .. "/git/trees/" .. branch .. "?recursive=1")
+		if (handle == nil) or (handle.getResponseCode() ~= 200) then
+			error('GitHub API did not respond for "'..repo..'/'..branch..'"')
+		end
+		local body = handle.readAll()
+		handle.close()
+		local tJson = textutils.unserialiseJSON(body)
+		if (tJson == nil) or (tJson.tree == nil) then
+			error("Could not parse GitHub tree response")
+		end
+		local tHashes = {}
+		for _, v in ipairs(tJson.tree) do
+			if v.type == "blob" then tHashes[v.path] = v.sha end
+		end
+		return tHashes
+	end)
+	if not bOk then return nil, tostring(result) end
+	return result, nil
+end
+
 -- Функція запису списку файлів, які потрібно стягнути з репозиторію. Кожен елемент tFileList — це
 -- {sGitPath=<шлях у репозиторії>, sLocalPath=<куди записати>}. Проходить по всьому списку одним разом,
 -- замість того щоб тягнути й писати файл одразу в тому місці, де про нього дізнались.
-local function writeFilesList(tFileList, repoPath) --> nil | isError(bool), tStatus(table), errorMsg(string)
-	local tStatus = {} -- По кожному індексу: true, якщо файл записано, false, якщо ні
+-- tOldHashes і tNewHashes — опційні (можуть бути nil): якщо для файлу відомий і старий, і новий git-хеш,
+-- і вони збігаються, і локальний файл усе ще існує — файл пропускається без завантаження.
+local function writeFilesList(tFileList, repoPath, tOldHashes, tNewHashes) --> nil | isError(bool), tStatus(table), errorMsg(string)
+	local tStatus = {} -- По кожному індексу: true, якщо файл записано (або пропущено як незмінений), false, якщо ні
 	local bHasError = false
 	local sErrorMsg = ""
 
 	for i, tFileEntry in ipairs(tFileList) do -- Проходимось по кожному запису зі списку
-		print("Receiving: ", tFileEntry.sGitPath)
-		local content, isError = _GET(repoPath .. tFileEntry.sGitPath)
-		if isError then -- Якщо не вдалось стягнути файл з репозиторію
-			print(" ..unexisted")
-			tStatus[i] = false
-			bHasError = true
-			sErrorMsg = sErrorMsg .. 'Cannot get file ("'..tFileEntry.sGitPath..'") from repository.\n'
+		local sNewHash = tNewHashes and tNewHashes[tFileEntry.sGitPath]
+		local sOldHash = tOldHashes and tOldHashes[tFileEntry.sGitPath]
+		if (sNewHash ~= nil) and (sNewHash == sOldHash) and fs.exists(tFileEntry.sLocalPath) then -- Файл не змінювався з минулого разу і вже є на диску
+			tStatus[i] = true
 		else
-			local fout = fs.open(tFileEntry.sLocalPath, "w") -- Пробуємо відкрити локальний файл для запису
-			if fout ~= nil then
-				fout.write(content)
-				fout.close()
-				tStatus[i] = true
-			else -- Якщо не вдалось відкрити локальний файл
+			print("Receiving: ", tFileEntry.sGitPath)
+			local content, isError = _GET(repoPath .. tFileEntry.sGitPath)
+			if isError then -- Якщо не вдалось стягнути файл з репозиторію
+				print(" ..unexisted")
 				tStatus[i] = false
 				bHasError = true
-				sErrorMsg = sErrorMsg .. 'Cannot open a local file ("'..tFileEntry.sLocalPath..'") for writing.\n'
+				sErrorMsg = sErrorMsg .. 'Cannot get file ("'..tFileEntry.sGitPath..'") from repository.\n'
+			else
+				local fout = fs.open(tFileEntry.sLocalPath, "w") -- Пробуємо відкрити локальний файл для запису
+				if fout ~= nil then
+					fout.write(content)
+					fout.close()
+					tStatus[i] = true
+				else -- Якщо не вдалось відкрити локальний файл
+					tStatus[i] = false
+					bHasError = true
+					sErrorMsg = sErrorMsg .. 'Cannot open a local file ("'..tFileEntry.sLocalPath..'") for writing.\n'
+				end
 			end
 		end
 	end
@@ -203,18 +241,30 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 	for fTag, fName in string.gmatch(instrList_File, '#(.-)="(.-)"') do -- Читання інструкцій з файлу згідно з патерном, та обробка цих інструкцій далі
 		if (fTag == "!") or (fTag == "Service") or (fTag == "File") then -- Якщо після ключового символу "#" є ("!" або "Service" або "File"), то це службові програми, і вони мають бути встановлені всюди
 			--TODO: використати функцію, яка буде надсилати дані в консоль, і відправляти на базу, і на КПК
-			local instalDir = ((fTag == "!") and ("") or (defaultFolderName)) -- "Тернарний оператор", конструкція:(s = condition ? "true" : "false"), пояснення: оператор "and" повертає перше хибне значення серед своїх операндів; якщо обидва операнди істинні, повертається останній з них, а оператор "or" повертає перше істинне значення серед своїх операндів; якщо обидва операнди хибні, повертається останній з них
-																			  -- Якщо "!", то не потрібно переміщати файл у підпапку, але якщо "Service", то потрібно перемістити в папку за замовчуванням
-			table.insert(tFileList, {sGitPath = fName, sLocalPath = curdir .. instalDir .. fName}) -- Додаємо файл у список на завантаження, самого завантаження тут ще не відбувається
+			if fName ~= "" then
+				local instalDir = ((fTag == "!") and ("") or (defaultFolderName)) -- "Тернарний оператор", конструкція:(s = condition ? "true" : "false"), пояснення: оператор "and" повертає перше хибне значення серед своїх операндів; якщо обидва операнди істинні, повертається останній з них, а оператор "or" повертає перше істинне значення серед своїх операндів; якщо обидва операнди хибні, повертається останній з них
+																				  -- Якщо "!", то не потрібно переміщати файл у підпапку, але якщо "Service", то потрібно перемістити в папку за замовчуванням
+				table.insert(tFileList, {sGitPath = fName, sLocalPath = curdir .. instalDir .. fName}) -- Додаємо файл у список на завантаження, самого завантаження тут ще не відбувається
+			else
+				print('Warning: empty path for tag "'..fTag..'" in Instructions.txt, skipping')
+			end
 		elseif fTag == "User" then -- Якщо після ключового символу "#" є ("User"), то це користувацькі програми, тобто
 			local _, _, fPath = string.find(fName, "sPath='(.-)'") -- Дізнаємось шлях, куди встановлювати програму
-			local _, _, fstartupArgs = string.find(fName, "sStartupArgs='(.-)'") -- Дізнаємось, які аргументи потрібно вказувати у файлику зі стартапом
-			--TODO: переробити систему аргументів запуску, або зчитувати, ну і відповідно записати, глобальні інструкції як таблицю з json файлу, або щось інше
-			local _, _, progName = string.find(fPath, "/(.-).lua") -- Витягуємо назву програми
-			table.insert(userProgTable, {kProgName = progName, kPath = fPath, kStartupArgs = fstartupArgs})
-			if (tDeploySettings ~= nil) and (progName == tDeploySettings.S_pinProgramm) then existingProgIndex = #userProgTable end -- Якщо це та сама програма, що вже стояла на цьому ПК раніше — запам'ятовуємо її індекс
+			if fPath ~= nil then
+				local _, _, fstartupArgs = string.find(fName, "sStartupArgs='(.-)'") -- Дізнаємось, які аргументи потрібно вказувати у файлику зі стартапом
+				--TODO: переробити систему аргументів запуску, або зчитувати, ну і відповідно записати, глобальні інструкції як таблицю з json файлу, або щось інше
+				local _, _, progName = string.find(fPath, "/(.-).lua") -- Витягуємо назву програми
+				if progName ~= nil then
+					table.insert(userProgTable, {kProgName = progName, kPath = fPath, kStartupArgs = fstartupArgs or ""})
+					if (tDeploySettings ~= nil) and (progName == tDeploySettings.S_pinProgramm) then existingProgIndex = #userProgTable end -- Якщо це та сама програма, що вже стояла на цьому ПК раніше — запам'ятовуємо її індекс
+				else
+					print('Warning: could not extract program name from sPath "'..fPath..'", skipping')
+				end
+			else
+				print('Warning: malformed User entry (missing sPath), skipping: '..fName)
+			end
 		else -- Неправильно складений або невідомий тег
-
+			print('Warning: unknown tag "'..fTag..'" in Instructions.txt, skipping: '..fName)
 		end
     end
 
@@ -260,8 +310,13 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 		print("No user programm has been selected.") -- Якщо ми не хочемо обирати програму
 	end
 
+	-- Отримуємо хеші файлів у репозиторії одним запитом, щоб не перезавантажувати те, що не змінилось.
+	-- Якщо GitHub API з якоїсь причини недоступне — просто качаємо все, як і раніше.
+	local tRepoHashes, hashErr = getRepoFileHashes(repo, branch)
+	if hashErr then print("Skip-detection unavailable (" .. hashErr .. "), downloading everything.") end
+
 	-- Завантаження всього, що назбиралось у tFileList, одним проходом — і службові файли, і обрана user-програма
-	local isDownloadError, tDownloadStatus, downloadErrorMsg = writeFilesList(tFileList, repoPath)
+	local isDownloadError, tDownloadStatus, downloadErrorMsg = writeFilesList(tFileList, repoPath, tDeploySettings and tDeploySettings.tFileHashes, tRepoHashes)
 	if isDownloadError then
 		print(downloadErrorMsg)
 		errorFlag = true
@@ -274,16 +329,24 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 	if chosenProgram ~= nil then -- Якщо ми обирали user-програму — settings.txt і startup.lua пишемо лише якщо сама програма реально завантажилась
 		if (not isDownloadError) or (tDownloadStatus[chosenProgramFileIndex]) then
 			local writeSettErr = writeProgramSettings(chosenProgram, curdir)
-			local writeDeployStateErr = serialToFile(curdir .. deploySettingsFileName, {Repository = repo, Branch = branch, S_pinProgramm = chosenProgram.S_pinProgramm, S_pinPathGit = chosenProgram.S_pinPathGit, S_pinStartArgs = chosenProgram.S_pinStartArgs}) -- Запам'ятовуємо для наступного запуску deploy.lua, що саме тут стоїть
-			if writeSettErr or writeDeployStateErr then
-				if writeSettErr then print(writeSettErr) end
-				if writeDeployStateErr then print(writeDeployStateErr) end
-				errorFlag = true
+			if writeSettErr then print(writeSettErr) errorFlag = true
 			else print('\nProgramm "'..chosenProgram.S_pinProgramm..'" was connected to "'..os.getComputerLabel()..'" label.') end
 		else
 			print('\nProgramm "'..chosenProgram.S_pinProgramm..'" was NOT connected: could not download the program file.')
 			errorFlag = true
 		end
+	end
+
+	if not isDownloadError then -- Запам'ятовуємо стан для наступного запуску: репозиторій, гілку, хеші файлів, і (якщо є) обрану програму
+		local tFinalDeploySettings = {Repository = repo, Branch = branch, tFileHashes = tRepoHashes}
+		local tProgSource = chosenProgram or tDeploySettings -- Якщо цього разу нічого не обирали — лишаємо те, що вже було записано раніше
+		if tProgSource ~= nil then
+			tFinalDeploySettings.S_pinProgramm = tProgSource.S_pinProgramm
+			tFinalDeploySettings.S_pinPathGit = tProgSource.S_pinPathGit
+			tFinalDeploySettings.S_pinStartArgs = tProgSource.S_pinStartArgs
+		end
+		local writeDeployStateErr = serialToFile(curdir .. deploySettingsFileName, tFinalDeploySettings)
+		if writeDeployStateErr then print(writeDeployStateErr) errorFlag = true end
 	end
 
 	-- Видалення старої папки та позначки невдалого запуску (лишаємо все на диску, якщо під час завантаження була помилка — про всяк випадок)
@@ -297,5 +360,5 @@ end
 
 -- Безпосередній запуск "розпаковки" середовища з GitHub
 local args = {...}
-print("#Name: deploy.lua# || #Version: 2.3.2#\n")
+print("#Name: deploy.lua# || #Version: 2.4.0#\n")
 clone(args[1], args[2])

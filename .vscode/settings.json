@@ -1,0 +1,11 @@
+{
+    "Lua.workspace.library": [
+        "${addons}/cc-tweaked/module/library"
+    ],
+    "Lua.runtime.version": "Lua 5.1",
+    "Lua.runtime.builtin": {
+        "io": "disable",
+        "os": "disable"
+    },
+    "Lua.workspace.checkThirdParty": false
+}
