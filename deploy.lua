@@ -2,6 +2,7 @@ local instrList_Name = "Instructions.txt"
 local localSettingsList_Name = "settings.txt"
 local deploySettingsFileName = "deploysettings.txt"
 local deployFailedMarkerName = "deployfailed.marker"
+local sUntaggedLabel = "Untagged"
 local prefix = "https://raw.githubusercontent.com/"
 local apiPrefix = "https://api.github.com/repos/"
 local defaultFolderName = "CCEnv/"
@@ -196,8 +197,12 @@ local function sortIndexByTag(userProgTable, sTag) --> tIndex(table), nCount(num
 	local tMatched, tRest = {}, {}
 	for i = 1, n do
 		local bHasTag = false
-		for _, sProgTag in ipairs(userProgTable[i].kTags) do
-			if sProgTag == sTag then bHasTag = true break end
+		if sTag == sUntaggedLabel then
+			bHasTag = (#userProgTable[i].kTags == 0)
+		else
+			for _, sProgTag in ipairs(userProgTable[i].kTags) do
+				if sProgTag == sTag then bHasTag = true break end
+			end
 		end
 		table.insert(bHasTag and tMatched or tRest, i)
 	end
@@ -349,12 +354,14 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 	while true do
 		if nLevel == 2 then
 			---Вивід списку тегів
-			local tTagList, tSeenTags = {}, {}
+			local tTagList, tSeenTags, bHasUntagged = {}, {}, false
 			for i = 1, #userProgTable do
+				if #userProgTable[i].kTags == 0 then bHasUntagged = true end
 				for _, sTag in ipairs(userProgTable[i].kTags) do
 					if not tSeenTags[sTag] then tSeenTags[sTag] = true table.insert(tTagList, sTag) end
 				end
 			end
+			if bHasUntagged then table.insert(tTagList, sUntaggedLabel) end
 
 			if #tTagList == 0 then
 				print("No tags defined for any program.")
@@ -458,5 +465,5 @@ end
 
 -- Безпосередній запуск "розпаковки" середовища з GitHub
 local args = {...}
-print("#Name: deploy.lua# || #Version: 2.5.2#\n")
+print("#Name: deploy.lua# || #Version: 2.5.3#\n")
 clone(args[1], args[2])
