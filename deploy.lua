@@ -342,6 +342,7 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
     end
 
 	local tIndex, nCount = sortIndexByTag(userProgTable, nil) -- Поточний масив індексів для показу: спершу повний, без фільтру за тегом
+	local bFirstPrompt = true -- Тайм-аут з дефолтом діє лише на першому показі списку; після будь-якої взаємодії чекаємо без обмеження
 	local realChoice -- Реальний індекс у userProgTable для обраної програми, якщо ввели номер зі списку (nil, якщо ввели "0")
 
 	while true do
@@ -351,7 +352,8 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 		local sEnteredChar = printProgramList(tIndex, nCount, userProgTable)
 
 		---Очікуємо вводу користувача, або значення за замовчуванням
-		local inputValue = readMenuChoice(-1, nCount, (existingProgIndex and "0" or nil), sEnteredChar) -- Якщо раніше вже була обрана й досі існуюча програма — можна безпечно взяти "0" за замовчуванням; якщо ні, чекаємо явний вибір без обмеження часу
+		local inputValue = readMenuChoice(-1, nCount, (bFirstPrompt and existingProgIndex and "0" or nil), sEnteredChar) -- Тайм-аут з дефолтом лише при першому показі; далі — без обмеження
+		bFirstPrompt = false
 		print() -- Переносимо рядок: якщо ввід стався за замовчуванням (тайм-аут, без жодного натискання), курсор лишається одразу після "> ", і наступний текст в'їжджав би в той самий рядок
 
 		if inputValue == -1 then -- Показуємо список тегів для вибору
@@ -368,7 +370,7 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 			else
 				print(' - Select a tag, -1 to cancel, -2 to show all programs' .. (existingProgIndex and ', or 0 to keep the current program:' or ':'))
 				for i, sTag in ipairs(tTagList) do print(" ["..i.."] "..sTag) end
-				local tagChoice = readMenuChoice(-2, #tTagList, (existingProgIndex and "0" or nil))
+				local tagChoice = readMenuChoice(-2, #tTagList, nil) -- Сюди потрапляємо лише після взаємодії — тайм-ауту тут немає
 				print()
 				if tagChoice > 0 then
 					tIndex, nCount = sortIndexByTag(userProgTable, tTagList[tagChoice])
@@ -423,8 +425,15 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 	if chosenProgram ~= nil then -- Якщо ми обирали user-програму — settings.txt і startup.lua пишемо лише якщо сама програма реально завантажилась
 		if (not isDownloadError) or (tDownloadStatus[chosenProgramFileIndex]) then
 			local writeSettErr = writeProgramSettings(chosenProgram, curdir)
-			if writeSettErr then print(writeSettErr) errorFlag = true
-			else print('\nProgramm "'..chosenProgram.S_pinProgramm..'" was connected to "'..os.getComputerLabel()..'" label.') end
+			if writeSettErr then
+				print(writeSettErr)
+				errorFlag = true
+			elseif chosenProgram.S_pinProgramm == nil then
+				print("Warning: chosenProgram.S_pinProgramm is nil after selection — this should not happen, please report it.")
+				errorFlag = true
+			else
+				print('\nProgramm "'..chosenProgram.S_pinProgramm..'" was connected to "'..os.getComputerLabel()..'" label.')
+			end
 		else
 			print('\nProgramm "'..chosenProgram.S_pinProgramm..'" was NOT connected: could not download the program file.')
 			errorFlag = true
@@ -454,5 +463,5 @@ end
 
 -- Безпосередній запуск "розпаковки" середовища з GitHub
 local args = {...}
-print("#Name: deploy.lua# || #Version: 2.5.0#\n")
+print("#Name: deploy.lua# || #Version: 2.5.1#\n")
 clone(args[1], args[2])
