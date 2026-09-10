@@ -342,22 +342,13 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
     end
 
 	local tIndex, nCount = sortIndexByTag(userProgTable, nil) -- Поточний масив індексів для показу: спершу повний, без фільтру за тегом
-	local bFirstPrompt = true -- Тайм-аут з дефолтом діє лише на першому показі списку; після будь-якої взаємодії чекаємо без обмеження
+	local nLevel = 1 -- 1 = повний список програм, 2 = список тегів, 3 = список програм, відфільтрований за тегом
+	local sActiveTag -- Тег, за яким зараз відфільтровано список (nil, якщо рівень не 3)
 	local realChoice -- Реальний індекс у userProgTable для обраної програми, якщо ввели номер зі списку (nil, якщо ввели "0")
 
 	while true do
-		---Вивід списку програм
-		print((existingProgIndex and (' - The selected program for this PC is: "' .. tDeploySettings.S_pinProgramm .. '".')) or ' - Select a program number from the list below, or 0 to skip:')
-		print(" [-1] By tag\n")
-		local sEnteredChar = printProgramList(tIndex, nCount, userProgTable)
-
-		---Очікуємо вводу користувача, або значення за замовчуванням
-		local inputValue = readMenuChoice(-1, nCount, (bFirstPrompt and existingProgIndex and "0" or nil), sEnteredChar) -- Тайм-аут з дефолтом лише при першому показі; далі — без обмеження
-		bFirstPrompt = false
-		print() -- Переносимо рядок: якщо ввід стався за замовчуванням (тайм-аут, без жодного натискання), курсор лишається одразу після "> ", і наступний текст в'їжджав би в той самий рядок
-
-		if inputValue == -1 then -- Показуємо список тегів для вибору
-			-- tIndex і nCount тут не змінюємо: якщо в пікері оберуть "Cancel", список повернеться до того, що був до цього
+		if nLevel == 2 then
+			---Вивід списку тегів
 			local tTagList, tSeenTags = {}, {}
 			for i = 1, #userProgTable do
 				for _, sTag in ipairs(userProgTable[i].kTags) do
@@ -367,25 +358,29 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 
 			if #tTagList == 0 then
 				print("No tags defined for any program.")
+				nLevel = 1
 			else
-				print(' - Select a tag, -1 to cancel, -2 to show all programs' .. (existingProgIndex and ', or 0 to keep the current program:' or ':'))
+				print(' - Select a tag, or -1 to go back' .. (existingProgIndex and ', or 0 to keep the current program:' or ':'))
 				for i, sTag in ipairs(tTagList) do print(" ["..i.."] "..sTag) end
-				local tagChoice = readMenuChoice(-2, #tTagList, nil) -- Сюди потрапляємо лише після взаємодії — тайм-ауту тут немає
+				local tagChoice = readMenuChoice(-1, #tTagList, nil) -- Рівень 2: тайм-ауту немає, чекаємо явний вибір
 				print()
-				if tagChoice > 0 then
-					tIndex, nCount = sortIndexByTag(userProgTable, tTagList[tagChoice])
-				elseif tagChoice == -2 then
-					tIndex, nCount = sortIndexByTag(userProgTable, nil)
-				elseif tagChoice == 0 then
-					break -- "0" працює однаково на будь-якому рівні: одразу лишаємо прив'язану програму
-				end
-				-- tagChoice == -1: нічого не робимо, tIndex/nCount лишаються як були — повертаємось на попередній рівень
+				if tagChoice > 0 then tIndex, nCount = sortIndexByTag(userProgTable, tTagList[tagChoice]) nLevel = 3 sActiveTag = tTagList[tagChoice]
+				elseif tagChoice == 0 then break
+				else tIndex, nCount = sortIndexByTag(userProgTable, nil) nLevel = 1 sActiveTag = nil end -- -1: завжди на рівень 1, з повним списком
 			end
-		elseif inputValue == 0 then
-			break -- Пропускаємо вибір; що робити далі — вирішиться нижче
 		else
-			realChoice = tIndex[inputValue]
-			break
+			---Вивід списку програм (рівень 1 — повний, рівень 3 — відфільтрований за тегом)
+			print((existingProgIndex and (' - The selected program for this PC is: "' .. tDeploySettings.S_pinProgramm .. '".')) or ' - Select a program number from the list below, or 0 to skip:')
+			if nLevel == 3 then print(' - Filtered by tag: "' .. sActiveTag .. '"') end
+			print(((nLevel == 3) and " [-1] Back\n") or " [-1] By tag\n")
+			local sEnteredChar = printProgramList(tIndex, nCount, userProgTable)
+
+			local inputValue = readMenuChoice(-1, nCount, ((nLevel == 1) and existingProgIndex and "0" or nil), sEnteredChar) -- Тайм-аут з дефолтом лише на рівні 1
+			print() -- Переносимо рядок: якщо ввід стався за замовчуванням (тайм-аут, без жодного натискання), курсор лишається одразу після "> ", і наступний текст в'їжджав би в той самий рядок
+
+			if inputValue == -1 then nLevel = 2 -- З рівня 1 і з рівня 3 однаково переходимо на рівень 2
+			elseif inputValue == 0 then break
+			else realChoice = tIndex[inputValue] break end
 		end
 	end
 
@@ -463,5 +458,5 @@ end
 
 -- Безпосередній запуск "розпаковки" середовища з GitHub
 local args = {...}
-print("#Name: deploy.lua# || #Version: 2.5.1#\n")
+print("#Name: deploy.lua# || #Version: 2.5.2#\n")
 clone(args[1], args[2])
