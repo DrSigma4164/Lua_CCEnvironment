@@ -26,23 +26,27 @@ local function _GET(path) --> content, nil | nil, isError(string) -- Читає 
 	return nil, isError
 end
 
---Функція зчитування даних з клавіатури за n секунд, або повернення значення за замовчуванням
-local function fReadData(defaultValue, nTimerTime) -->  --> content(string) | nil, nil | isError(string)
+--Функція зчитування даних з клавіатури за n секунд, або повернення значення за замовчуванням.
+--sEnteredChar — опційно: якщо символ уже відомий заздалегідь (наприклад, натиснутий під час прокрутки списку вище),
+--одразу читаємо його як введений, не чекаючи нової події "char"
+local function fReadData(defaultValue, nTimerTime, sEnteredChar) --> content(string) | nil, nil | isError(string)
 	expect.expect(1, defaultValue, "string", "nil")
 	expect.expect(2, nTimerTime, "number", "nil")
+	expect.expect(3, sEnteredChar, "string", "nil")
 
 	if ((nTimerTime == nil) or (nTimerTime < 0)) then nTimerTime = 3 end
 
 	local nTimerId = os.startTimer(nTimerTime)--запускаємо таймер на 3 секунди і зберігаємо його ID
 	while true do
-		local sEventName, eventArgs = os.pullEvent()
+		local sEventName, eventArgs
+		if sEnteredChar == nil then sEventName, eventArgs = os.pullEvent() end -- Якщо символ уже відомий — не чекаємо нову подію, одразу йдемо в гілку читання нижче
 		if ((sEventName == "timer") and (eventArgs == nTimerId) and (defaultValue ~= nil)) then -- Якщо таймер вже вийшов і є значення за замовчуванням
 			return defaultValue
 		elseif ((sEventName == "char") and (eventArgs == ' ') and (defaultValue ~= nil)) then -- Або ми натиснули на пробіл і є значення за замовчуванням
 			return defaultValue
-		elseif ((sEventName == "char") and (eventArgs ~= ' ')) then -- Або ввели щось інше
+		elseif (sEnteredChar ~= nil) or ((sEventName == "char") and (eventArgs ~= ' ')) then -- Або вже маємо символ заздалегідь, або ввели щось інше зараз
 			write(">")
-			return read(nil, nil, nil, eventArgs)
+			return read(nil, nil, nil, sEnteredChar or eventArgs)
 		end
 	end
 	return nil, "EoF"
@@ -174,6 +178,70 @@ local function writeProgramSettings(settingTable, curdir) --> nil | isError(stri
 	return nil
 end
 
+-- Функція побудови масиву індексів userProgTable для показу списку. Якщо sTag не заданий (nil) — звичайний тотожний
+-- порядок 1..n (весь список); якщо заданий — ті самі індекси, але записи з цим тегом переставлені на початок.
+-- userProgTable сам не змінюється — лише повертається новий масив індексів і кількість записів з тегом на початку
+-- (дорівнює довжині всього масиву, якщо sTag nil).
+local function sortIndexByTag(userProgTable, sTag) --> tIndex(table), nCount(number)
+	expect.expect(1, userProgTable, "table")
+	expect.expect(2, sTag, "string", "nil")
+
+	local n = #userProgTable
+	if sTag == nil then
+		local tIndex = {}
+		for i = 1, n do tIndex[i] = i end
+		return tIndex, n
+	end
+
+	local tMatched, tRest = {}, {}
+	for i = 1, n do
+		local bHasTag = false
+		for _, sProgTag in ipairs(userProgTable[i].kTags) do
+			if sProgTag == sTag then bHasTag = true break end
+		end
+		table.insert(bHasTag and tMatched or tRest, i)
+	end
+	local nCount = #tMatched
+	for _, i in ipairs(tRest) do table.insert(tMatched, i) end
+	return tMatched, nCount
+end
+
+-- Функція друку списку програм за масивом індексів (з прокруткою, якщо список не влазить на екран).
+-- Повертає символ, натиснутий під час прокрутки, якщо такий був (щоб одразу передати його в подальше зчитування вводу)
+local function printProgramList(tIndex, nCount, userProgTable) --> sEnteredChar(string) | nil
+	local sEnteredChar
+	local _, nDisplayHight = term.getSize()
+	for i = 1, nCount do
+		local _, nCursPosY = term.getCursorPos() -- Позиція, де курсор БУДЕ ДРУКУВАТИ
+		if nCursPosY == (nDisplayHight) then --Якщо курсор уже на останньому рядку
+			term.scroll(1) -- Піднімаємо весь текст вгору
+			term.setCursorPos(1, nDisplayHight) -- Ставимо курсор на початок останнього рядка
+			term.write("Wait or press any key") -- Пишемо підказку
+			 -- чекаємо пів секунди або натискання, яке одразу зберігаємо як sEnteredChar, щоб не загубити
+			fWaitOrSkip(0.5, true, true, function(eventTbl) if (eventTbl[1] == "char") then sEnteredChar = eventTbl[2] return true end end)
+			term.clearLine() -- Очищаємо рядок, на якому була підказка
+			term.setCursorPos(1, nDisplayHight) -- Ставимо курсор на початок останнього рядка
+			if sEnteredChar ~= nil then break end -- Символ уже отримано — решту списку не друкуємо
+		end
+		print(" ["..i.."] ".."Name: "..userProgTable[tIndex[i]].kProgName)
+	end
+	return sEnteredChar
+end
+
+-- Функція очікування вводу номера в діапазоні [nMin, nMax], з повтором при некоректному значенні.
+-- sEnteredChar (опційно) використовується лише при першій спробі — символ, натиснутий ще під час прокрутки списку.
+local function readMenuChoice(nMin, nMax, sDefaultInput, sEnteredChar) --> inputValue(number)
+	local inputValue
+	local bFirstTry = true
+	repeat -- Цикл з післяумовою для перевірки введеного значення
+		write("\n> ")
+		inputValue = tonumber(fReadData(sDefaultInput, 3, bFirstTry and sEnteredChar or nil))
+		bFirstTry = false
+		if ((inputValue > nMax) or (inputValue < nMin)) then print("Please enter again: ") end
+	until ((inputValue <= nMax) and (inputValue >= nMin))
+	return inputValue
+end
+
 -- Функція клонування репозиторію
 local function clone(repo, branch) -->  isError(bool), isError(string) -- Клонує дані з GitHub
 	local errorFlag = false
@@ -212,7 +280,7 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 	sleep(1) -- чекаємо 1 секунду, щоб він завершився
 
 	-- Перевіряємо, чи минулий запуск лишив позначку невдалого завантаження — якщо так, стара папка є єдиною робочою копією,
-	-- і танець з перейменуванням тут небезпечний: пишемо файли прямо в наявну CCEnv/, не чіпаючи deleteFolder_
+	-- і перейменування тут небезпечне: пишемо файли прямо в наявну CCEnv/, не змінюючи deleteFolder_
 	local bPreviousRunFailed = fs.exists(curdir .. deployFailedMarkerName)
 	local renameStatus
 	if bPreviousRunFailed then
@@ -252,10 +320,15 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 			local _, _, fPath = string.find(fName, "sPath='(.-)'") -- Дізнаємось шлях, куди встановлювати програму
 			if fPath ~= nil then
 				local _, _, fstartupArgs = string.find(fName, "sStartupArgs='(.-)'") -- Дізнаємось, які аргументи потрібно вказувати у файлику зі стартапом
+				local _, _, sTags = string.find(fName, "sTags='(.-)'") -- Дізнаємось теги програми
 				--TODO: переробити систему аргументів запуску, або зчитувати, ну і відповідно записати, глобальні інструкції як таблицю з json файлу, або щось інше
 				local _, _, progName = string.find(fPath, "/(.-).lua") -- Витягуємо назву програми
 				if progName ~= nil then
-					table.insert(userProgTable, {kProgName = progName, kPath = fPath, kStartupArgs = fstartupArgs or ""})
+					local kTags = {} -- Розбиваємо "sTags='Tag1,Tag2'" на масив; якщо sTags nil або порожній — масив лишається порожнім
+					if sTags ~= nil then
+						for sTag in string.gmatch(sTags, "[^,]+") do table.insert(kTags, sTag) end
+					end
+					table.insert(userProgTable, {kProgName = progName, kPath = fPath, kStartupArgs = fstartupArgs or "", kTags = kTags})
 					if (tDeploySettings ~= nil) and (progName == tDeploySettings.S_pinProgramm) then existingProgIndex = #userProgTable end -- Якщо це та сама програма, що вже стояла на цьому ПК раніше — запам'ятовуємо її індекс
 				else
 					print('Warning: could not extract program name from sPath "'..fPath..'", skipping')
@@ -268,37 +341,58 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 		end
     end
 
-	 ---Вивід списку програм
-	print((existingProgIndex and (' - The selected program for this PC is: "' .. tDeploySettings.S_pinProgramm .. '".')) or ' - Select a program number from the list below, or 0 to skip:')
-	local _, nDisplayHight = term.getSize()
-	for k, v in pairs(userProgTable) do
-		local _, nCursPosY = term.getCursorPos() -- Позиція, де курсор БУДЕ ДРУКУВАТИ
-		if nCursPosY == (nDisplayHight) then --Якщо курсор уже на останньому рядку
-			term.scroll(1) -- Піднімаємо весь текст вгору
-			term.setCursorPos(1, nDisplayHight) -- Ставимо курсор на початок останнього рядка
-			term.write("Wait or press any key") -- Пишемо підказку
-			 -- чекаємо пів секунди або запуску функції, в якій, якщо функція поверне true, тоді значення "aSkipAnsw" повернеться як результат першої функції "fWaitOrSkip()"
-			fWaitOrSkip(0.5, true, true, function(eventTbl)  if ((eventTbl[1] == "key")) then print("TEST1111") return true end end)
-			term.clearLine() -- Очищаємо рядок, на якому була підказка
-			term.setCursorPos(1, nDisplayHight) -- Ставимо курсор на початок останнього рядка
-		end
-		print(" ["..k.."] ".."Name: "..v.kProgName)
-	end
+	local tIndex, nCount = sortIndexByTag(userProgTable, nil) -- Поточний масив індексів для показу: спершу повний, без фільтру за тегом
+	local realChoice -- Реальний індекс у userProgTable для обраної програми, якщо ввели номер зі списку (nil, якщо ввели "0")
 
-	---Очікуємо вводу користувача, або значення за замовчуванням
-	local inputValue
-	repeat -- Цикл з післяумовою для перевірки введеного значення
-		write("\n> ")
-		inputValue = tonumber(fReadData((existingProgIndex and "0" or nil), 3)) -- Якщо раніше вже була обрана й досі існуюча програма — можна безпечно взяти "0" за замовчуванням; якщо ні, чекаємо явний вибір без обмеження часу
-		if ((inputValue > #userProgTable) or (inputValue < 0)) then print("Please enter again: ") end
-	until ((inputValue <= #userProgTable) and (inputValue >= 0))
-	print() -- Переносимо рядок: якщо ввід стався за замовчуванням (тайм-аут, без жодного натискання), курсор лишається одразу після "> ", і наступний текст в'їжджав би в той самий рядок
+	while true do
+		---Вивід списку програм
+		print((existingProgIndex and (' - The selected program for this PC is: "' .. tDeploySettings.S_pinProgramm .. '".')) or ' - Select a program number from the list below, or 0 to skip:')
+		print(" [-1] By tag\n")
+		local sEnteredChar = printProgramList(tIndex, nCount, userProgTable)
+
+		---Очікуємо вводу користувача, або значення за замовчуванням
+		local inputValue = readMenuChoice(-1, nCount, (existingProgIndex and "0" or nil), sEnteredChar) -- Якщо раніше вже була обрана й досі існуюча програма — можна безпечно взяти "0" за замовчуванням; якщо ні, чекаємо явний вибір без обмеження часу
+		print() -- Переносимо рядок: якщо ввід стався за замовчуванням (тайм-аут, без жодного натискання), курсор лишається одразу після "> ", і наступний текст в'їжджав би в той самий рядок
+
+		if inputValue == -1 then -- Показуємо список тегів для вибору
+			-- tIndex і nCount тут не змінюємо: якщо в пікері оберуть "Cancel", список повернеться до того, що був до цього
+			local tTagList, tSeenTags = {}, {}
+			for i = 1, #userProgTable do
+				for _, sTag in ipairs(userProgTable[i].kTags) do
+					if not tSeenTags[sTag] then tSeenTags[sTag] = true table.insert(tTagList, sTag) end
+				end
+			end
+
+			if #tTagList == 0 then
+				print("No tags defined for any program.")
+			else
+				print(' - Select a tag, -1 to cancel, -2 to show all programs' .. (existingProgIndex and ', or 0 to keep the current program:' or ':'))
+				for i, sTag in ipairs(tTagList) do print(" ["..i.."] "..sTag) end
+				local tagChoice = readMenuChoice(-2, #tTagList, (existingProgIndex and "0" or nil))
+				print()
+				if tagChoice > 0 then
+					tIndex, nCount = sortIndexByTag(userProgTable, tTagList[tagChoice])
+				elseif tagChoice == -2 then
+					tIndex, nCount = sortIndexByTag(userProgTable, nil)
+				elseif tagChoice == 0 then
+					break -- "0" працює однаково на будь-якому рівні: одразу лишаємо прив'язану програму
+				end
+				-- tagChoice == -1: нічого не робимо, tIndex/nCount лишаються як були — повертаємось на попередній рівень
+			end
+		elseif inputValue == 0 then
+			break -- Пропускаємо вибір; що робити далі — вирішиться нижче
+		else
+			realChoice = tIndex[inputValue]
+			break
+		end
+	end
 
 	-- Виконання вибраних користувачем дій
 	local chosenProgram -- Таблиця з даними обраної user-програми, якщо користувач її обрав
 	local chosenProgramFileIndex -- Індекс запису обраної програми в tFileList, щоб потім перевірити саме її статус завантаження
-	if inputValue > 0 then -- Ввели номер програми зі списку
-		chosenProgram = {S_pinProgramm = userProgTable[inputValue].kProgName, S_pinPathGit = userProgTable[inputValue].kPath, S_pinStartArgs = userProgTable[inputValue].kStartupArgs} -- Нова таблиця з даними, S означає сервісні дані
+	if realChoice ~= nil then -- Ввели номер програми зі списку (повного або відфільтрованого за тегом)
+		local v = userProgTable[realChoice]
+		chosenProgram = {S_pinProgramm = v.kProgName, S_pinPathGit = v.kPath, S_pinStartArgs = v.kStartupArgs} -- Нова таблиця з даними, S означає сервісні дані
 		table.insert(tFileList, {sGitPath = chosenProgram.S_pinPathGit, sLocalPath = curdir .. defaultFolderName .. chosenProgram.S_pinProgramm .. ".lua"}) -- Додаємо обрану програму в той самий загальний список
 		chosenProgramFileIndex = #tFileList -- Запам'ятовуємо, під яким індексом вона в списку, щоб потім перевірити саме її статус
 	elseif existingProgIndex ~= nil then -- Пропустили вибір ("0"), але раніше обрана програма й досі є в списку з гіта — лишаємо її
@@ -360,5 +454,5 @@ end
 
 -- Безпосередній запуск "розпаковки" середовища з GitHub
 local args = {...}
-print("#Name: deploy.lua# || #Version: 2.4.0#\n")
+print("#Name: deploy.lua# || #Version: 2.5.0#\n")
 clone(args[1], args[2])
