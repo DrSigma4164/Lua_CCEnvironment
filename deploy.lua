@@ -173,7 +173,7 @@ local function writeProgramSettings(settingTable, curdir) --> nil | isError(stri
 
 	local foutStartup = fs.open("/startup.lua", "w") -- Записуємо в файл стартапу потрібні дані
 	if foutStartup == nil then return "userProgError: cannot open startup file for writing." end
-	foutStartup.write('shell.run("'..curdir..defaultFolderName..settingTable.S_pinProgramm..'.lua"'..settingTable.S_pinStartArgs..')')
+	foutStartup.write('shell.run("'..curdir..defaultFolderName..'kernel.lua", "'..curdir..defaultFolderName..settingTable.S_pinProgramm..'.lua"'..settingTable.S_pinStartArgs..')')
 	foutStartup.close()
 
 	return nil
@@ -465,5 +465,5 @@ end
 
 -- Безпосередній запуск "розпаковки" середовища з GitHub
 local args = {...}
-print("#Name: deploy.lua# || #Version: 2.5.3#\n")
+print("#Name: deploy.lua# || #Version: 2.6.0#\n")
 clone(args[1], args[2])

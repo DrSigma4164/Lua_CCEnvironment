@@ -1,11 +1,34 @@
 local tFunctionLists = {} -- Таблиця, в яку будуть додані функції; щоб додати, напишіть TABLE_NAME.FUNC_NAME() біля імені функції.
 local expect = require "cc.expect"
 local defaultFolderName = "CCEnv/"
+local sMonitorProtocol = "cc-monitor" -- Назва протоколу rednet для зв'язку монітора з КПК
 
 --TODO: зробити функцію, яка буде надсилати дані в консоль, і відправляти на базу, і на КПК
 --TODO: зробити функцію для вводу команд, яка запускається паралельно з основною програмою, і команди можна буде вводити як вручну, так і за допомогою запропонованих блоків, наприклад: на екрані буде показуватись список можливих ПК, далі при виборі буде показуватись команда, а далі в залежності від команди аргументи
 --TODO: зробити набір функцій для звязку з модом IntegratedDynamics
 --TODO: зробити функцію для управління інвентарем черепашки
+
+-- Локальна функція очікування конкретної події з тайм-аутом. Не додається в tFunctionLists — внутрішня допоміжна.
+local function waitForEvent(nTimerTime, fEventCher) --> bFound(boolean)
+	local nTimerId = os.startTimer(nTimerTime)
+	while true do
+		local tEvent = {os.pullEvent()}
+		if (tEvent[1] == "timer") and (tEvent[2] == nTimerId) then return false end
+		if fEventCher(tEvent) then return true end
+	end
+end
+
+-- Функція друку з тегом джерела і кольором (як у docker compose: "ConfEngine | текст"). Якщо термінал
+-- не кольоровий — просто тег без кольору. Відсутність тегу означає, що пише незмінена стара user-програма.
+function tFunctionLists.logPrint(sSource, nColor, ...) --> nil
+	expect.expect(1, sSource, "string")
+	expect.expect(2, nColor, "number", "nil")
+	local tArgs = {...}
+	for i = 1, #tArgs do tArgs[i] = tostring(tArgs[i]) end
+	if term.isColor() and (nColor ~= nil) then term.setTextColor(nColor) end
+	print(sSource .. " | " .. table.concat(tArgs, " "))
+	if term.isColor() then term.setTextColor(colors.white) end
+end
 
 --Функція драйвера налаштувань, яка послідовно буде виконувати команди
 function tFunctionLists.fSettingsDriver() --> funcStatus(boolean), returnMsg(string)
@@ -49,6 +72,8 @@ function tFunctionLists.fSettingsDriver() --> funcStatus(boolean), returnMsg(str
             end
             os.queueEvent("settings_driver_out", nRecvId, bErrorFlag, "save error")
         elseif ((eventCommand == "stop")) then -- Або команда "стоп"
+            if nRecvId ~= nil then os.queueEvent("settings_driver_out", nRecvId, "ack", nil) end -- Підтверджуємо отримання команди
+            if nRecvId ~= nil then os.queueEvent("settings_driver_out", nRecvId, "done", nil) end -- Зупинка тут миттєва (налаштування вже збережені на кожен "set"), тому done одразу після ack
             return true, 'Command: "stop"'
         end
     end
@@ -98,6 +123,63 @@ function tFunctionLists.setSettings(sTableLabel, sTableValue, nDefaultTime) --> 
             return sOperContent, sOperErr
         end
     end
+    return false, 'Error: EoF'
+end
+
+-- Функція для вставки в цикл user-програми: неблокуюче перевіряє, чи прийшла команда від монітора.
+-- Наразі є одна: {sType="stop_request"} — монітор просить зупинитись. Якщо прийшла — шле {sType="stop_ack"}
+-- (отримав, починаю), викликає fnStop (унікальну для програми функцію зупинки, яка повертає isOk(boolean),
+-- errorMsg(string)|nil), шле {sType="stop_done"} з результатом, і повертає true. Якщо команди немає — повертає
+-- false майже миттєво, не блокуючи цикл програми.
+function tFunctionLists.checkMonitorCommand(fnStop) --> bWasStopped(boolean)
+    expect.expect(1, fnStop, "function")
+    local tMsg
+    local bGotSignal = waitForEvent(0, function(t)
+        if (t[1] == sMonitorProtocol) and (type(t[2]) == "table") and (t[2].sType == "stop_request") then tMsg = t[2] return true end
+    end)
+    if not bGotSignal then return false end
+    os.queueEvent(sMonitorProtocol, {sType = "stop_ack", nReqId = tMsg.nReqId})
+    local bOk, sErr = fnStop()
+    os.queueEvent(sMonitorProtocol, {sType = "stop_done", nReqId = tMsg.nReqId, bOk = bOk, sErrorMsg = sErr})
+    return true
+end
+
+-- Функція моніторинг-двигуна. Піднімає мережу (якщо є бездротовий модем) під протоколом sMonitorProtocol.
+-- Локальні команди (для тестування, напряму через os.queueEvent) і мережеві команди від КПК обробляються
+-- одним і тим самим внутрішнім каналом — вхідні rednet-повідомлення просто переводяться в нього.
+-- Наразі є одна команда: {sType="stop"} — зупиняє user-програму (до 10с на stop_ack і ще до 10с на stop_done,
+-- інакше вважає її завислою і йде далі), потім конфіг-двигун через наявний "settings_driver_in"/"stop"
+-- (так само, до 5с на кожен крок), надсилає в мережу {sStatus="stopped"} і перезавантажує ПК.
+function tFunctionLists.fMonitoringDriver() --> funcStatus(boolean), returnMsg(string)
+    local modem = peripheral.find("modem", function(_, m) return m.isWireless() end)
+    local bNetworked = (modem ~= nil)
+    if bNetworked then
+        rednet.open(peripheral.getName(modem))
+        rednet.host(sMonitorProtocol, os.getComputerLabel())
+    end
+
+    while true do
+        local sEventName, a, b, c = os.pullEvent()
+        if bNetworked and (sEventName == "rednet_message") and (c == sMonitorProtocol) and (type(b) == "table") then -- Мережева команда — переводимо в той самий внутрішній канал
+            os.queueEvent(sMonitorProtocol, b)
+        elseif (sEventName == sMonitorProtocol) and (type(a) == "table") and (a.sType == "stop") then -- Команда зупинити все і перезавантажитись
+            local nReqId = os.startTimer(0) -- Використовуємо лише як унікальний ID запиту, не як реальний таймер
+            os.queueEvent(sMonitorProtocol, {sType = "stop_request", nReqId = nReqId})
+            if waitForEvent(10, function(t) return (t[1] == sMonitorProtocol) and (type(t[2]) == "table") and (t[2].sType == "stop_ack") and (t[2].nReqId == nReqId) end) then
+                waitForEvent(10, function(t) return (t[1] == sMonitorProtocol) and (type(t[2]) == "table") and (t[2].sType == "stop_done") and (t[2].nReqId == nReqId) end)
+            end -- Якщо не було навіть stop_ack — вважаємо user-програму завислою і йдемо далі, не чекаючи на неї більше
+
+            local nSettReqId = os.startTimer(0)
+            os.queueEvent("settings_driver_in", nSettReqId, "stop")
+            if waitForEvent(5, function(t) return (t[1] == "settings_driver_out") and (t[2] == nSettReqId) and (t[3] == "ack") end) then
+                waitForEvent(5, function(t) return (t[1] == "settings_driver_out") and (t[2] == nSettReqId) and (t[3] == "done") end)
+            end
+
+            if bNetworked then rednet.broadcast({sStatus = "stopped", sLabel = os.getComputerLabel()}, sMonitorProtocol) end
+            os.reboot()
+        end
+    end
+
     return false, 'Error: EoF'
 end
 
@@ -274,5 +356,5 @@ function tFunctionLists.goToGPS(vDestPos, vDirection, allowDig, fFuncAftMove) --
     end
 end
 
-print("#Name: ServicePrograms.lua# || #Version: 2.4.7#\n")
+print("#Name: ServicePrograms.lua# || #Version: 2.5.0#\n")
 return tFunctionLists -- Повертає таблицю, в якій знаходяться функції

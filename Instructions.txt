@@ -3,6 +3,7 @@
 
 #!="deploy.lua"
 #Service="ServicePrograms.lua"
+#Service="kernel.lua"
 #User="sPath='User/HelloWorld.lua', bIsNeedStrartup='', sStartupArgs='', sTags=''"
 #User="sPath='User/TestTurtle.lua', bIsNeedStrartup='',  sStartupArgs='', sTags='Test,Turtle'"
 #User="sPath='User/Turtle_GeoFinder.lua', bIsNeedStrartup='',  sStartupArgs=', 16', sTags='GeoFinder,Turtle'"
