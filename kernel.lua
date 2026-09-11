@@ -17,10 +17,11 @@ local function runProgram()
 	shell.run(sProgramPath, table.unpack(tProgramArgs))
 end
 
-print("#Name: kernel.lua# || #Version: 1.0.0#\n")
+print("#Name: kernel.lua# || #Version: 1.1.0#\n")
 
 local bOk, sErr = pcall(parallel.waitForAll, runProgram, fService.fSettingsDriver, fService.fMonitoringDriver)
 if not bOk then -- Якщо будь-яка з трьох гілок впала з необробленою помилкою (не за штатною командою "стоп")
 	fService.logPrint("Kernel", colors.red, "Fatal: " .. tostring(sErr))
+	sleep(10) -- Даємо час прочитати повідомлення на екрані перед перезавантаженням
 	os.reboot()
 end
