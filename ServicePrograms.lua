@@ -127,17 +127,23 @@ function tFunctionLists.setSettings(sTableLabel, sTableValue, nDefaultTime) --> 
 end
 
 -- Функція для вставки в цикл user-програми: неблокуюче перевіряє, чи прийшла команда від монітора.
--- Наразі є одна: {sType="stop_request"} — монітор просить зупинитись. Якщо прийшла — шле {sType="stop_ack"}
--- (отримав, починаю), викликає fnStop (унікальну для програми функцію зупинки, яка повертає isOk(boolean),
--- errorMsg(string)|nil), шле {sType="stop_done"} з результатом, і повертає true. Якщо команди немає — повертає
--- false майже миттєво, не блокуючи цикл програми.
+-- {sType="heartbeat_ping"} — монітор перевіряє, чи програма жива; одразу відповідаємо {sType="heartbeat_pong"}
+-- і повертаємо false (це не зупинка, цикл програми триває далі як звичайно).
+-- {sType="stop_request"} — монітор просить зупинитись. Шлемо {sType="stop_ack"} (отримав, починаю), викликаємо
+-- fnStop (унікальну для програми функцію зупинки, яка повертає isOk(boolean), errorMsg(string)|nil), шлемо
+-- {sType="stop_done"} з результатом, і повертаємо true.
+-- Якщо жодної команди немає — повертає false майже миттєво, не блокуючи цикл програми.
 function tFunctionLists.checkMonitorCommand(fnStop) --> bWasStopped(boolean)
     expect.expect(1, fnStop, "function")
     local tMsg
     local bGotSignal = waitForEvent(0, function(t)
-        if (t[1] == sMonitorProtocol) and (type(t[2]) == "table") and (t[2].sType == "stop_request") then tMsg = t[2] return true end
+        if (t[1] == sMonitorProtocol) and (type(t[2]) == "table") and ((t[2].sType == "stop_request") or (t[2].sType == "heartbeat_ping")) then tMsg = t[2] return true end
     end)
     if not bGotSignal then return false end
+    if tMsg.sType == "heartbeat_ping" then
+        os.queueEvent(sMonitorProtocol, {sType = "heartbeat_pong", nReqId = tMsg.nReqId})
+        return false
+    end
     os.queueEvent(sMonitorProtocol, {sType = "stop_ack", nReqId = tMsg.nReqId})
     local bOk, sErr = fnStop()
     os.queueEvent(sMonitorProtocol, {sType = "stop_done", nReqId = tMsg.nReqId, bOk = bOk, sErrorMsg = sErr})
@@ -156,6 +162,11 @@ end
 --   list_commands - повертає список команд, які підтримує цей ПК, напряму тому, хто запитав.
 --   dummyCommand  - тестова команда: через nSeconds друкує sMessage. Виконується як окрема паралельна
 --                   гілка через "spawn" (дивись нижче), тому не блокує цикл диспетчеризації, поки спить.
+--
+-- Окремо, теж через "spawn" — вартовий цикл: раз на 10 секунд шле "heartbeat_ping" user-програмі й чекає
+-- "heartbeat_pong". Не відповіла 3 рази поспіль (тобто 30 секунд без жодної відповіді) — вважаємо її
+-- завислою чи завершеною без циклу (як стара програма без "checkMonitorCommand") і викликаємо ту саму
+-- команду "stop", що й за зовнішнім запитом.
 function tFunctionLists.fMonitoringDriver(spawn) --> funcStatus(boolean), returnMsg(string)
     local modem = peripheral.find("modem", function(_, m) return m.isWireless() end)
     local bNetworked = (modem ~= nil)
@@ -208,6 +219,26 @@ function tFunctionLists.fMonitoringDriver(spawn) --> funcStatus(boolean), return
             end
         },
     }
+
+    spawn(function() -- Вартовий цикл heartbeat — окрема паралельна гілка, не блокує диспетчеризацію нижче
+        local nMissed = 0
+        while true do
+            sleep(10)
+            local nReqId = os.startTimer(0) -- Використовуємо лише як унікальний ID запиту, не як реальний таймер
+            os.queueEvent(sMonitorProtocol, {sType = "heartbeat_ping", nReqId = nReqId})
+            local bGotPong = waitForEvent(10, function(t) return (t[1] == sMonitorProtocol) and (type(t[2]) == "table") and (t[2].sType == "heartbeat_pong") and (t[2].nReqId == nReqId) end)
+            if bGotPong then
+                nMissed = 0
+            else
+                nMissed = nMissed + 1
+                tFunctionLists.logPrint("Monitor", colors.orange, "User program did not respond to heartbeat (" .. nMissed .. "/3)")
+                if nMissed >= 3 then
+                    tFunctionLists.logPrint("Monitor", colors.red, "User program appears unresponsive, stopping")
+                    tCommands.stop.fnHandler({}, nil) -- Та сама команда "stop", що й за зовнішнім запитом; вона й перезавантажить ПК
+                end
+            end
+        end
+    end)
 
     local function dispatch(tMsg, nSenderId)
         if (type(tMsg) == "table") and (tCommands[tMsg.sType] ~= nil) then
@@ -400,5 +431,5 @@ function tFunctionLists.goToGPS(vDestPos, vDirection, allowDig, fFuncAftMove) --
     end
 end
 
-print("#Name: ServicePrograms.lua# || #Version: 2.6.0#\n")
+print("#Name: ServicePrograms.lua# || #Version: 2.7.0#\n")
 return tFunctionLists -- Повертає таблицю, в якій знаходяться функції
