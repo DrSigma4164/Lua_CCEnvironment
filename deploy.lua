@@ -326,6 +326,7 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 			if fPath ~= nil then
 				local _, _, fstartupArgs = string.find(fName, "sStartupArgs='(.-)'") -- Дізнаємось, які аргументи потрібно вказувати у файлику зі стартапом
 				local _, _, sTags = string.find(fName, "sTags='(.-)'") -- Дізнаємось теги програми
+				local _, _, sDependencies = string.find(fName, "sDependencies='(.-)'") -- Дізнаємось список інших програм, від яких залежить ця
 				--TODO: переробити систему аргументів запуску, або зчитувати, ну і відповідно записати, глобальні інструкції як таблицю з json файлу, або щось інше
 				local _, _, progName = string.find(fPath, "/(.-).lua") -- Витягуємо назву програми
 				if progName ~= nil then
@@ -333,7 +334,11 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 					if sTags ~= nil then
 						for sTag in string.gmatch(sTags, "[^,]+") do table.insert(kTags, sTag) end
 					end
-					table.insert(userProgTable, {kProgName = progName, kPath = fPath, kStartupArgs = fstartupArgs or "", kTags = kTags})
+					local kDependencies = {} -- Розбиваємо "sDependencies='Name1,Name2'" на масив; якщо sDependencies nil або порожній — масив лишається порожнім
+					if sDependencies ~= nil then
+						for sDepName in string.gmatch(sDependencies, "[^,]+") do table.insert(kDependencies, sDepName) end
+					end
+					table.insert(userProgTable, {kProgName = progName, kPath = fPath, kStartupArgs = fstartupArgs or "", kTags = kTags, kDependencies = kDependencies})
 					if (tDeploySettings ~= nil) and (progName == tDeploySettings.S_pinProgramm) then existingProgIndex = #userProgTable end -- Якщо це та сама програма, що вже стояла на цьому ПК раніше — запам'ятовуємо її індекс
 				else
 					print('Warning: could not extract program name from sPath "'..fPath..'", skipping')
@@ -349,7 +354,7 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 	local tIndex, nCount = sortIndexByTag(userProgTable, nil) -- Поточний масив індексів для показу: спершу повний, без фільтру за тегом
 	local nLevel = 1 -- 1 = повний список програм, 2 = список тегів, 3 = список програм, відфільтрований за тегом
 	local sActiveTag -- Тег, за яким зараз відфільтровано список (nil, якщо рівень не 3)
-	local realChoice -- Реальний індекс у userProgTable для обраної програми, якщо ввели номер зі списку (nil, якщо ввели "0")
+	local chosenProgIndex -- Реальний індекс у userProgTable обраної програми (nil, якщо ввели "0" і прив'язаної програми немає)
 
 	while true do
 		if nLevel == 2 then
@@ -386,26 +391,33 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 			print() -- Переносимо рядок: якщо ввід стався за замовчуванням (тайм-аут, без жодного натискання), курсор лишається одразу після "> ", і наступний текст в'їжджав би в той самий рядок
 
 			if inputValue == -1 then nLevel = 2 -- З рівня 1 і з рівня 3 однаково переходимо на рівень 2
-			elseif inputValue == 0 then break
-			else realChoice = tIndex[inputValue] break end
+			elseif inputValue == 0 then chosenProgIndex = existingProgIndex break
+			else chosenProgIndex = tIndex[inputValue] break end
 		end
 	end
 
 	-- Виконання вибраних користувачем дій
 	local chosenProgram -- Таблиця з даними обраної user-програми, якщо користувач її обрав
-	local chosenProgramFileIndex -- Індекс запису обраної програми в tFileList, щоб потім перевірити саме її статус завантаження
-	if realChoice ~= nil then -- Ввели номер програми зі списку (повного або відфільтрованого за тегом)
-		local v = userProgTable[realChoice]
+	if chosenProgIndex ~= nil then
+		local v = userProgTable[chosenProgIndex]
 		chosenProgram = {S_pinProgramm = v.kProgName, S_pinPathGit = v.kPath, S_pinStartArgs = v.kStartupArgs} -- Нова таблиця з даними, S означає сервісні дані
 		table.insert(tFileList, {sGitPath = chosenProgram.S_pinPathGit, sLocalPath = curdir .. defaultFolderName .. chosenProgram.S_pinProgramm .. ".lua"}) -- Додаємо обрану програму в той самий загальний список
-		chosenProgramFileIndex = #tFileList -- Запам'ятовуємо, під яким індексом вона в списку, щоб потім перевірити саме її статус
-	elseif existingProgIndex ~= nil then -- Пропустили вибір ("0"), але раніше обрана програма й досі є в списку з гіта — лишаємо її
-		local v = userProgTable[existingProgIndex]
-		chosenProgram = {S_pinProgramm = v.kProgName, S_pinPathGit = v.kPath, S_pinStartArgs = v.kStartupArgs}
-		table.insert(tFileList, {sGitPath = chosenProgram.S_pinPathGit, sLocalPath = curdir .. defaultFolderName .. chosenProgram.S_pinProgramm .. ".lua"})
-		chosenProgramFileIndex = #tFileList
 	else -- "0" і раніше обраної програми немає
 		print("No user programm has been selected.") -- Якщо ми не хочемо обирати програму
+	end
+
+	if chosenProgIndex ~= nil then -- Додаємо файли залежностей обраної програми в той самий загальний список на завантаження
+		for _, sDepName in ipairs(userProgTable[chosenProgIndex].kDependencies) do
+			local bFoundDep = false
+			for i = 1, #userProgTable do
+				if userProgTable[i].kProgName == sDepName then
+					table.insert(tFileList, {sGitPath = userProgTable[i].kPath, sLocalPath = curdir .. defaultFolderName .. sDepName .. ".lua"})
+					bFoundDep = true
+					break
+				end
+			end
+			if not bFoundDep then print('Warning: dependency "'..sDepName..'" not found among User programs, skipping') end
+		end
 	end
 
 	-- Отримуємо хеші файлів у репозиторії одним запитом, щоб не перезавантажувати те, що не змінилось.
@@ -414,7 +426,7 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 	if hashErr then print("Skip-detection unavailable (" .. hashErr .. "), downloading everything.") end
 
 	-- Завантаження всього, що назбиралось у tFileList, одним проходом — і службові файли, і обрана user-програма
-	local isDownloadError, tDownloadStatus, downloadErrorMsg = writeFilesList(tFileList, repoPath, tDeploySettings and tDeploySettings.tFileHashes, tRepoHashes)
+	local isDownloadError, _, downloadErrorMsg = writeFilesList(tFileList, repoPath, tDeploySettings and tDeploySettings.tFileHashes, tRepoHashes)
 	if isDownloadError then
 		print(downloadErrorMsg)
 		errorFlag = true
@@ -424,8 +436,8 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 		end
 	end
 
-	if chosenProgram ~= nil then -- Якщо ми обирали user-програму — settings.txt і startup.lua пишемо лише якщо сама програма реально завантажилась
-		if (not isDownloadError) or (tDownloadStatus[chosenProgramFileIndex]) then
+	if chosenProgram ~= nil then -- Якщо ми обирали user-програму — settings.txt і startup.lua пишемо лише якщо все зі списку реально завантажилось, без жодної помилки (це вже включає і саму програму, і її залежності)
+		if not isDownloadError then
 			local writeSettErr = writeProgramSettings(chosenProgram, curdir)
 			if writeSettErr then
 				print(writeSettErr)
@@ -437,7 +449,7 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 				print('\nProgramm "'..chosenProgram.S_pinProgramm..'" was connected to "'..os.getComputerLabel()..'" label.')
 			end
 		else
-			print('\nProgramm "'..chosenProgram.S_pinProgramm..'" was NOT connected: could not download the program file.')
+			print('\nProgramm "'..chosenProgram.S_pinProgramm..'" was NOT connected: one or more files failed to download.')
 			errorFlag = true
 		end
 	end
@@ -465,5 +477,5 @@ end
 
 -- Безпосередній запуск "розпаковки" середовища з GitHub
 local args = {...}
-print("#Name: deploy.lua# || #Version: 2.6.0#\n")
+print("#Name: deploy.lua# || #Version: 2.7.1#\n")
 clone(args[1], args[2])
