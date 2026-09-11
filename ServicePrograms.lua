@@ -146,11 +146,17 @@ end
 
 -- Функція моніторинг-двигуна. Піднімає мережу (якщо є бездротовий модем) під протоколом sMonitorProtocol.
 -- Локальні команди (для тестування, напряму через os.queueEvent) і мережеві команди від КПК обробляються
--- одним і тим самим внутрішнім каналом — вхідні rednet-повідомлення просто переводяться в нього.
--- Наразі є одна команда: {sType="stop"} — зупиняє user-програму (до 10с на stop_ack і ще до 10с на stop_done,
--- інакше вважає її завислою і йде далі), потім конфіг-двигун через наявний "settings_driver_in"/"stop"
--- (так само, до 5с на кожен крок), надсилає в мережу {sStatus="stopped"} і перезавантажує ПК.
-function tFunctionLists.fMonitoringDriver() --> funcStatus(boolean), returnMsg(string)
+-- через одну диспетчер-таблицю (tCommands) — додати нову команду означає лише додати новий запис туди,
+-- більше нічого міняти не треба.
+--
+-- Команди:
+--   stop          - зупиняє user-програму (до 10с на stop_ack, ще до 10с на stop_done, інакше вважає її
+--                    завислою і йде далі), потім конфіг-двигун (так само, до 5с на кожен крок) через наявний
+--                    "settings_driver_in"/"stop", надсилає в мережу {sStatus="stopped"} і перезавантажує ПК.
+--   list_commands - повертає список команд, які підтримує цей ПК, напряму тому, хто запитав.
+--   dummyCommand  - тестова команда: через nSeconds друкує sMessage. Виконується як окрема паралельна
+--                   гілка через "spawn" (дивись нижче), тому не блокує цикл диспетчеризації, поки спить.
+function tFunctionLists.fMonitoringDriver(spawn) --> funcStatus(boolean), returnMsg(string)
     local modem = peripheral.find("modem", function(_, m) return m.isWireless() end)
     local bNetworked = (modem ~= nil)
     if bNetworked then
@@ -158,29 +164,67 @@ function tFunctionLists.fMonitoringDriver() --> funcStatus(boolean), returnMsg(s
         rednet.host(sMonitorProtocol, os.getComputerLabel())
     end
 
-    while true do
-        local sEventName, a, b, c = os.pullEvent()
-        if bNetworked and (sEventName == "rednet_message") and (c == sMonitorProtocol) and (type(b) == "table") then -- Мережева команда — переводимо в той самий внутрішній канал
-            os.queueEvent(sMonitorProtocol, b)
-        elseif (sEventName == sMonitorProtocol) and (type(a) == "table") and (a.sType == "stop") then -- Команда зупинити все і перезавантажитись
-            local nReqId = os.startTimer(0) -- Використовуємо лише як унікальний ID запиту, не як реальний таймер
-            os.queueEvent(sMonitorProtocol, {sType = "stop_request", nReqId = nReqId})
-            if waitForEvent(10, function(t) return (t[1] == sMonitorProtocol) and (type(t[2]) == "table") and (t[2].sType == "stop_ack") and (t[2].nReqId == nReqId) end) then
-                waitForEvent(10, function(t) return (t[1] == sMonitorProtocol) and (type(t[2]) == "table") and (t[2].sType == "stop_done") and (t[2].nReqId == nReqId) end)
-            end -- Якщо не було навіть stop_ack — вважаємо user-програму завислою і йдемо далі, не чекаючи на неї більше
+    local tCommands
+    tCommands = {
+        stop = {
+            sDescription = "Stop the user program and config engine, then reboot the PC",
+            tArgs = {},
+            fnHandler = function(tMsg, nSenderId)
+                local nReqId = os.startTimer(0) -- Використовуємо лише як унікальний ID запиту, не як реальний таймер
+                os.queueEvent(sMonitorProtocol, {sType = "stop_request", nReqId = nReqId})
+                if waitForEvent(10, function(t) return (t[1] == sMonitorProtocol) and (type(t[2]) == "table") and (t[2].sType == "stop_ack") and (t[2].nReqId == nReqId) end) then
+                    waitForEvent(10, function(t) return (t[1] == sMonitorProtocol) and (type(t[2]) == "table") and (t[2].sType == "stop_done") and (t[2].nReqId == nReqId) end)
+                end -- Якщо не було навіть stop_ack — вважаємо user-програму завислою і йдемо далі, не чекаючи на неї більше
 
-            local nSettReqId = os.startTimer(0)
-            os.queueEvent("settings_driver_in", nSettReqId, "stop")
-            if waitForEvent(5, function(t) return (t[1] == "settings_driver_out") and (t[2] == nSettReqId) and (t[3] == "ack") end) then
-                waitForEvent(5, function(t) return (t[1] == "settings_driver_out") and (t[2] == nSettReqId) and (t[3] == "done") end)
+                local nSettReqId = os.startTimer(0)
+                os.queueEvent("settings_driver_in", nSettReqId, "stop")
+                if waitForEvent(5, function(t) return (t[1] == "settings_driver_out") and (t[2] == nSettReqId) and (t[3] == "ack") end) then
+                    waitForEvent(5, function(t) return (t[1] == "settings_driver_out") and (t[2] == nSettReqId) and (t[3] == "done") end)
+                end
+
+                if bNetworked then rednet.broadcast({sStatus = "stopped", sLabel = os.getComputerLabel()}, sMonitorProtocol) end
+                os.reboot()
             end
+        },
+        list_commands = {
+            sDescription = "Return the list of commands this PC supports",
+            tArgs = {},
+            fnHandler = function(tMsg, nSenderId)
+                local tList = {}
+                for sName, tCmd in pairs(tCommands) do
+                    table.insert(tList, {sName = sName, sDescription = tCmd.sDescription, tArgs = tCmd.tArgs})
+                end
+                rednet.send(nSenderId, {sType = "command_list", nReqId = tMsg.nReqId, tCommands = tList}, sMonitorProtocol)
+            end
+        },
+        dummyCommand = {
+            sDescription = "Test command: prints sMessage after nSeconds",
+            tArgs = {"nSeconds", "sMessage"},
+            fnHandler = function(tMsg, nSenderId)
+                spawn(function() -- Окрема паралельна гілка, тому sleep тут не блокує цикл диспетчеризації нижче
+                    sleep(tMsg.nSeconds)
+                    tFunctionLists.logPrint("Dummy", colors.yellow, tMsg.sMessage)
+                end)
+            end
+        },
+    }
 
-            if bNetworked then rednet.broadcast({sStatus = "stopped", sLabel = os.getComputerLabel()}, sMonitorProtocol) end
-            os.reboot()
+    local function dispatch(tMsg, nSenderId)
+        if (type(tMsg) == "table") and (tCommands[tMsg.sType] ~= nil) then
+            tCommands[tMsg.sType].fnHandler(tMsg, nSenderId)
         end
     end
 
-    return false, 'Error: EoF'
+    while true do
+        local sEventName, a, b, c = os.pullEvent()
+        if bNetworked and (sEventName == "rednet_message") and (c == sMonitorProtocol) and (type(b) == "table") then
+            dispatch(b, a) -- b = саме повідомлення, a = ID відправника
+        elseif (sEventName == sMonitorProtocol) and (type(a) == "table") then
+            dispatch(a, nil) -- Локальна подія (для тестування) — немає мережевого відправника, щоб відповідати
+        end
+    end
+
+    return false, "Error: EoF"
 end
 
 --Функція зчитування даних з клавіатури за n секунд, або повернення значення за замовчуванням
@@ -356,5 +400,5 @@ function tFunctionLists.goToGPS(vDestPos, vDirection, allowDig, fFuncAftMove) --
     end
 end
 
-print("#Name: ServicePrograms.lua# || #Version: 2.5.0#\n")
+print("#Name: ServicePrograms.lua# || #Version: 2.6.0#\n")
 return tFunctionLists -- Повертає таблицю, в якій знаходяться функції
