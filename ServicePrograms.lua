@@ -61,13 +61,14 @@ function tFunctionLists.fSettingsDriver() --> funcStatus(boolean), returnMsg(str
         local _, nRecvId, eventCommand, eventTableId, eventArgs = os.pullEvent("settings_driver_in")
         if ((eventCommand == "get")) then -- Якщо потрібно зчитати дані
             if tSettingTable[eventTableId] ~= nil then -- Якщо є таке поле і там є значення
-                os.queueEvent("settings_driver_out", nRecvId, tSettingTable[eventTableId], "")
+                os.queueEvent("settings_driver_out", nRecvId, tSettingTable[eventTableId], nil)
             else
                 os.queueEvent("settings_driver_out", nRecvId, nil, "no field")
             end
         elseif ((eventCommand == "set")) then -- Або потрібно встановити дані
             tSettingTable[eventTableId] = eventArgs
-            local bErrorFlag = false
+            local bErrorFlag = false -- true, якщо справді сталась помилка запису
+            local sErrMsg
             local fout, _ = fs.open("/" .. defaultFolderName .. "temp" .. localSettingsList_Name, "w") -- Пробуємо відкрити файл з налаштуваннями
             if fout ~= nil then --Якщо файл відкрився
                 local seriObj = textutils.serialize(tSettingTable)
@@ -75,12 +76,20 @@ function tFunctionLists.fSettingsDriver() --> funcStatus(boolean), returnMsg(str
                     fout.write(seriObj)
                     fout.close()
                     shell.run("delete", "/" .. defaultFolderName .. localSettingsList_Name)
-                    if shell.run("rename", "/" .. defaultFolderName .. "temp" .. localSettingsList_Name, "/" .. defaultFolderName .. localSettingsList_Name) then bErrorFlag = true end
+                    if not shell.run("rename", "/" .. defaultFolderName .. "temp" .. localSettingsList_Name, "/" .. defaultFolderName .. localSettingsList_Name) then
+                        bErrorFlag = true
+                        sErrMsg = "save error"
+                    end
                 else
                     fout.close()
+                    bErrorFlag = true
+                    sErrMsg = "serialize error"
                 end
+            else
+                bErrorFlag = true
+                sErrMsg = "cannot open temp file for writing"
             end
-            os.queueEvent("settings_driver_out", nRecvId, bErrorFlag, "save error")
+            os.queueEvent("settings_driver_out", nRecvId, bErrorFlag, sErrMsg)
         elseif ((eventCommand == "stop")) then -- Або команда "стоп"
             if nRecvId ~= nil then os.queueEvent("settings_driver_out", nRecvId, "ack", nil) end -- Підтверджуємо отримання команди
             if nRecvId ~= nil then os.queueEvent("settings_driver_out", nRecvId, "done", nil) end -- Зупинка тут миттєва (налаштування вже збережені на кожен "set"), тому done одразу після ack
@@ -114,7 +123,7 @@ function tFunctionLists.getSettings(sTableLabel, nDefaultTime) --> operResConten
 end
 
 --Функція встановлення вказаного налаштування за вказаний час (за замовчуванням 5 секунд)
-function tFunctionLists.setSettings(sTableLabel, sTableValue, nDefaultTime) --> operStatus(boolean), nil | errorMsg(string)
+function tFunctionLists.setSettings(sTableLabel, sTableValue, nDefaultTime) --> bErrorFlag(boolean), errorMsg(string) | false, nil
     expect.expect(1, sTableLabel, "string")
     expect.expect(2, sTableValue, "string")
     expect.expect(3, nDefaultTime, "number", "nil")
@@ -128,7 +137,7 @@ function tFunctionLists.setSettings(sTableLabel, sTableValue, nDefaultTime) --> 
     while true do
         local sEventName, nEventID, sOperContent, sOperErr = os.pullEvent()
         if ((sEventName == "timer") and (nEventID == nRequestId)) then -- Якщо таймер уже вийшов
-            return false, "Timer out (set)"
+            return true, "Timer out (set)"
         elseif ((sEventName == "settings_driver_out") and (nEventID == nRequestId)) then -- Або ми отримали відповідь
             return sOperContent, sOperErr
         end
@@ -176,6 +185,118 @@ function tFunctionLists.waitForFocus() --> nil
     if multishell == nil then return end
     while multishell.getFocus() ~= multishell.getCurrent() do
         sleep(1)
+    end
+end
+
+-- Прокручуваний список із ручним вводом номера (не read(), щоб стрілки лишались вільними для прокрутки, а не
+-- йшли в історію вводу). Довгі рядки, що переносяться на кілька рядків терміналу, враховані — прокрутка йде
+-- в рядках терміналу, не в пунктах списку, щоб не стрибала нерівномірно на суміші коротких і довгих пунктів.
+--
+-- sHeader (може бути nil) — заголовок над органами керування, теж завжди на місці при перемальовці.
+-- tItems — масив готових рядків для показу.
+-- tSelected (може бути nil):
+--   nil — режим одиночного вибору. Лише "[-1] Cancel". Enter на номері одразу повертає це число.
+--         Повертає nSingleChoice(number) | nil (при -1).
+--   масив boolean розміром #tItems (типово всі true) — режим множинного вибору. "[-1] Cancel",
+--         "[-2] Confirm", "[-3] Invert selection", "[0] Select/deselect all" (перемикає всі одразу,
+--         залежно від того, чи зараз усі позначені). Enter на номері перемикає позначку цього пункту.
+--         Повертає tSelected(table) | nil (при -1).
+--
+-- ^/v — прокрутка на половину видимої висоти списку. Список коротший за екран — стрілки просто нічого
+-- не роблять. Один пункт, довший за всю видиму висоту сам по собі — теоретично можливо, спеціально не
+-- обробляється, просто виведеться повністю, трохи витіснивши межу видимої області за той кадр.
+function tFunctionLists.fReadScrollMenu(sHeader, tItems, tSelected) --> tSelected(table) | nSingleChoice(number) | nil
+    expect.expect(1, sHeader, "string", "nil")
+    expect.expect(2, tItems, "table")
+    expect.expect(3, tSelected, "table", "nil")
+
+    local bMultiSelect = (tSelected ~= nil)
+    local nWidth, nHeight = term.getSize()
+    local tItemRows = {} -- Скільки рядків терміналу займає кожен пункт (перенесення довгих рядків)
+    for i, sItem in ipairs(tItems) do
+        tItemRows[i] = math.max(1, math.ceil(#sItem / nWidth))
+    end
+    local tHeaderLines = {} -- Заповнюється нижче, після локальних функцій; redraw() уже посилається на неї як на своє замикання
+    local nListHeight
+    local nScrollOffset = 0 -- В рядках терміналу, не в пунктах списку
+    local sInputBuffer = ""
+
+    -- ==================== Локальні функції ====================
+
+    -- Додає пару органів керування одним рядком, якщо вистачає ширини екрана, інакше кожен на своєму рядку
+    local function addControlPair(sLeft, sRight)
+        if nWidth >= 40 then
+            table.insert(tHeaderLines, sLeft .. string.rep(" ", math.max(1, 20 - #sLeft)) .. sRight)
+        else
+            table.insert(tHeaderLines, sLeft)
+            table.insert(tHeaderLines, sRight)
+        end
+    end
+
+    local function redraw()
+        term.clear()
+        term.setCursorPos(1, 1)
+        for _, sLine in ipairs(tHeaderLines) do print(sLine) end
+
+        local nRow, nSkipped = 0, 0
+        for i, sItem in ipairs(tItems) do
+            if nSkipped + tItemRows[i] > nScrollOffset then
+                if nRow >= nListHeight then break end
+                local sMark = bMultiSelect and (tSelected[i] and "[*] " or "[ ] ") or ""
+                print(" ["..i.."] "..sMark..sItem)
+                nRow = nRow + tItemRows[i]
+            end
+            nSkipped = nSkipped + tItemRows[i]
+        end
+
+        term.setCursorPos(1, nHeight)
+        write("> "..sInputBuffer)
+    end
+
+    -- ==================== Кінець локальних функцій ====================
+
+    if sHeader ~= nil then table.insert(tHeaderLines, sHeader) end
+    if bMultiSelect then
+        addControlPair("[-1] Cancel", "[-2] Confirm")
+        addControlPair("[-3] Invert", "[0] Select All")
+    else table.insert(tHeaderLines, "[-1] Cancel") end
+    table.insert(tHeaderLines, "-")
+    nListHeight = nHeight - #tHeaderLines - 1 -- -1 для рядка вводу знизу
+
+    redraw()
+    while true do
+        local sEvent, a = os.pullEvent()
+        if (sEvent == "key") and (a == keys.up) then
+            nScrollOffset = math.max(0, nScrollOffset - math.ceil(nListHeight / 2))
+            redraw()
+        elseif (sEvent == "key") and (a == keys.down) then
+            local nTotalRows = 0
+            for _, r in ipairs(tItemRows) do nTotalRows = nTotalRows + r end
+            nScrollOffset = math.min(math.max(0, nTotalRows - nListHeight), nScrollOffset + math.ceil(nListHeight / 2))
+            redraw()
+        elseif (sEvent == "key") and (a == keys.backspace) then
+            sInputBuffer = sInputBuffer:sub(1, -2)
+            redraw()
+        elseif (sEvent == "key") and (a == keys.enter) then
+            local nValue = tonumber(sInputBuffer)
+            sInputBuffer = ""
+            if nValue == -1 then return nil
+            elseif bMultiSelect and (nValue == -2) then return tSelected
+            elseif bMultiSelect and (nValue == -3) then
+                for i = 1, #tSelected do tSelected[i] = not tSelected[i] end
+            elseif bMultiSelect and (nValue == 0) then
+                local bAllSelected = true
+                for i = 1, #tSelected do if not tSelected[i] then bAllSelected = false break end end
+                for i = 1, #tSelected do tSelected[i] = not bAllSelected end
+            elseif (nValue ~= nil) and (nValue >= 1) and (nValue <= #tItems) then
+                if bMultiSelect then tSelected[nValue] = not tSelected[nValue]
+                else return nValue end
+            end
+            redraw()
+        elseif (sEvent == "char") and a:match("^[%d%-]$") then
+            sInputBuffer = sInputBuffer .. a
+            redraw()
+        end
     end
 end
 
@@ -699,6 +820,6 @@ function tFunctionLists.goToGPS(vDestPos, vDirection, allowDig, fFuncAftMove) --
     end
 end
 
-print("#Name: ServicePrograms.lua# || #Version: 2.16.0#\n")
+print("#Name: ServicePrograms.lua# || #Version: 2.17.0#\n")
 tFunctionLists.sMonitorProtocol = sMonitorProtocol -- Назва протоколу rednet монітора, для програм, що самі спілкуються мережею (наприклад, КПК)
 return tFunctionLists -- Повертає таблицю, в якій знаходяться функції
