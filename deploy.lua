@@ -173,7 +173,7 @@ local function writeProgramSettings(settingTable, curdir) --> nil | isError(stri
 
 	local foutStartup = fs.open("/startup.lua", "w") -- Записуємо в файл стартапу потрібні дані
 	if foutStartup == nil then return "userProgError: cannot open startup file for writing." end
-	foutStartup.write('shell.run("'..curdir..defaultFolderName..'kernel.lua", "'..curdir..defaultFolderName..settingTable.S_pinProgramm..'.lua"'..settingTable.S_pinStartArgs..')')
+	foutStartup.write('shell.run("'..curdir..defaultFolderName..'kernel.lua", "'..settingTable.S_pinLaunchMode..'", "'..curdir..defaultFolderName..settingTable.S_pinProgramm..'.lua"'..settingTable.S_pinStartArgs..')')
 	foutStartup.close()
 
 	return nil
@@ -327,6 +327,7 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 				local _, _, fstartupArgs = string.find(fName, "sStartupArgs='(.-)'") -- Дізнаємось, які аргументи потрібно вказувати у файлику зі стартапом
 				local _, _, sTags = string.find(fName, "sTags='(.-)'") -- Дізнаємось теги програми
 				local _, _, sDependencies = string.find(fName, "sDependencies='(.-)'") -- Дізнаємось список інших програм, від яких залежить ця
+				local _, _, sLaunchMode = string.find(fName, "sLaunchMode='(.-)'") -- Дізнаємось, як кернел має запускати цю програму: "" (звичайно) чи "multishell"
 				--TODO: переробити систему аргументів запуску, або зчитувати, ну і відповідно записати, глобальні інструкції як таблицю з json файлу, або щось інше
 				local _, _, progName = string.find(fPath, "/(.-).lua") -- Витягуємо назву програми
 				if progName ~= nil then
@@ -338,7 +339,7 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 					if sDependencies ~= nil then
 						for sDepName in string.gmatch(sDependencies, "[^,]+") do table.insert(kDependencies, sDepName) end
 					end
-					table.insert(userProgTable, {kProgName = progName, kPath = fPath, kStartupArgs = fstartupArgs or "", kTags = kTags, kDependencies = kDependencies})
+					table.insert(userProgTable, {kProgName = progName, kPath = fPath, kStartupArgs = fstartupArgs or "", kTags = kTags, kDependencies = kDependencies, kLaunchMode = sLaunchMode or ""})
 					if (tDeploySettings ~= nil) and (progName == tDeploySettings.S_pinProgramm) then existingProgIndex = #userProgTable end -- Якщо це та сама програма, що вже стояла на цьому ПК раніше — запам'ятовуємо її індекс
 				else
 					print('Warning: could not extract program name from sPath "'..fPath..'", skipping')
@@ -400,7 +401,7 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 	local chosenProgram -- Таблиця з даними обраної user-програми, якщо користувач її обрав
 	if chosenProgIndex ~= nil then
 		local v = userProgTable[chosenProgIndex]
-		chosenProgram = {S_pinProgramm = v.kProgName, S_pinPathGit = v.kPath, S_pinStartArgs = v.kStartupArgs} -- Нова таблиця з даними, S означає сервісні дані
+		chosenProgram = {S_pinProgramm = v.kProgName, S_pinPathGit = v.kPath, S_pinStartArgs = v.kStartupArgs, S_pinLaunchMode = v.kLaunchMode} -- Нова таблиця з даними, S означає сервісні дані
 		table.insert(tFileList, {sGitPath = chosenProgram.S_pinPathGit, sLocalPath = curdir .. defaultFolderName .. chosenProgram.S_pinProgramm .. ".lua"}) -- Додаємо обрану програму в той самий загальний список
 	else -- "0" і раніше обраної програми немає
 		print("No user programm has been selected.") -- Якщо ми не хочемо обирати програму
@@ -461,6 +462,7 @@ local function clone(repo, branch) -->  isError(bool), isError(string) -- Кло
 			tFinalDeploySettings.S_pinProgramm = tProgSource.S_pinProgramm
 			tFinalDeploySettings.S_pinPathGit = tProgSource.S_pinPathGit
 			tFinalDeploySettings.S_pinStartArgs = tProgSource.S_pinStartArgs
+			tFinalDeploySettings.S_pinLaunchMode = tProgSource.S_pinLaunchMode
 		end
 		local writeDeployStateErr = serialToFile(curdir .. deploySettingsFileName, tFinalDeploySettings)
 		if writeDeployStateErr then print(writeDeployStateErr) errorFlag = true end
@@ -477,5 +479,5 @@ end
 
 -- Безпосередній запуск "розпаковки" середовища з GitHub
 local args = {...}
-print("#Name: deploy.lua# || #Version: 2.7.1#\n")
+print("#Name: deploy.lua# || #Version: 2.8.1#\n")
 clone(args[1], args[2])

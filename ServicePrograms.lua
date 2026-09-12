@@ -4,6 +4,7 @@ local defaultFolderName = "CCEnv/"
 local sMonitorProtocol = "cc-monitor" -- Назва протоколу rednet для зв'язку монітора з КПК
 local journalFileName = "journal.txt" -- Файл спільного журналу логів між моніторами мережі
 local nJournalLimit = 100 -- Скільки останніх записів журналу зберігати
+local nAliveAnnounceIntervalMs = 5000 -- Мінімальний проміжок між проактивними alive_announce в checkMonitorCommand (мс)
 
 --TODO: зробити функцію, яка буде надсилати дані в консоль, і відправляти на базу, і на КПК
 --TODO: зробити функцію для вводу команд, яка запускається паралельно з основною програмою, і команди можна буде вводити як вручну, так і за допомогою запропонованих блоків, наприклад: на екрані буде показуватись список можливих ПК, далі при виборі буде показуватись команда, а далі в залежності від команди аргументи
@@ -135,15 +136,24 @@ function tFunctionLists.setSettings(sTableLabel, sTableValue, nDefaultTime) --> 
     return false, 'Error: EoF'
 end
 
--- Функція для вставки в цикл user-програми: неблокуюче перевіряє, чи прийшла команда від монітора.
+-- Функція для вставки в цикл user-програми: неблокуюче перевіряє, чи прийшла команда від монітора, і заразом
+-- сама проактивно повідомляє "я жива" раз на nAliveAnnounceIntervalMs — без sleep, порівнянням системного
+-- часу з часом попереднього повідомлення (nLastAliveAnnounce — змінна рівня файлу, не в user-програмі, тож
+-- викликати цю функцію в циклі можна одним рядком, нічого додатково не оголошуючи).
 -- {sType="heartbeat_ping"} — монітор перевіряє, чи програма жива; одразу відповідаємо {sType="heartbeat_pong"}
 -- і повертаємо false (це не зупинка, цикл програми триває далі як звичайно).
 -- {sType="stop_request"} — монітор просить зупинитись. Шлемо {sType="stop_ack"} (отримав, починаю), викликаємо
 -- fnStop (унікальну для програми функцію зупинки, яка повертає isOk(boolean), errorMsg(string)|nil), шлемо
 -- {sType="stop_done"} з результатом, і повертаємо true.
 -- Якщо жодної команди немає — повертає false майже миттєво, не блокуючи цикл програми.
+local nLastAliveAnnounce = 0
 function tFunctionLists.checkMonitorCommand(fnStop) --> bWasStopped(boolean)
     expect.expect(1, fnStop, "function")
+    if (os.epoch("utc") - nLastAliveAnnounce) > nAliveAnnounceIntervalMs then
+        nLastAliveAnnounce = os.epoch("utc")
+        os.queueEvent(sMonitorProtocol, {sType = "alive_announce"})
+    end
+
     local tMsg
     local bGotSignal = waitForEvent(0, function(t)
         if (t[1] == sMonitorProtocol) and (type(t[2]) == "table") and ((t[2].sType == "stop_request") or (t[2].sType == "heartbeat_ping")) then tMsg = t[2] return true end
@@ -169,6 +179,8 @@ end
 --                    завислою і йде далі), потім конфіг-двигун (так само, до 5с на кожен крок) через наявний
 --                    "settings_driver_in"/"stop", надсилає в мережу {sStatus="stopped"} і перезавантажує ПК.
 --   list_commands - повертає список команд, які підтримує цей ПК, напряму тому, хто запитав.
+--   ping          - відповідає {sType="pong", sLabel=...} напряму запитувачу; призначено для пошуку живих
+--                   ПК мережі (широкомовний ping, кожен живий відповідає своєю міткою).
 --   dummyCommand  - тестова команда: через nSeconds друкує sMessage. Виконується як окрема паралельна
 --                   гілка через "spawn" (дивись нижче), тому не блокує цикл диспетчеризації, поки спить.
 --   journal       - спільний журнал логів між усіма моніторами мережі (останні nJournalLimit записів,
@@ -349,6 +361,13 @@ function tFunctionLists.fMonitoringDriver(spawn) --> funcStatus(boolean), return
                 rednet.send(nSenderId, {sType = "command_list", nReqId = tMsg.nReqId, tCommands = tList}, sMonitorProtocol)
             end
         },
+        ping = {
+            sDescription = "Reply with this PC's label (used to discover live PCs on the network)",
+            tArgs = {},
+            fnHandler = function(tMsg, nSenderId)
+                if bNetworked and (nSenderId ~= nil) then rednet.send(nSenderId, {sType = "pong", sLabel = os.getComputerLabel()}, sMonitorProtocol) end
+            end
+        },
         dummyCommand = {
             sDescription = "Test command: prints sMessage after nSeconds",
             tArgs = {"nSeconds", "sMessage"},
@@ -440,8 +459,11 @@ function tFunctionLists.fMonitoringDriver(spawn) --> funcStatus(boolean), return
             sleep(10)
             local nReqId = os.startTimer(0) -- Використовуємо лише як унікальний ID запиту, не як реальний таймер
             os.queueEvent(sMonitorProtocol, {sType = "heartbeat_ping", nReqId = nReqId})
-            local bGotPong = waitForEvent(10, function(t) return (t[1] == sMonitorProtocol) and (type(t[2]) == "table") and (t[2].sType == "heartbeat_pong") and (t[2].nReqId == nReqId) end)
-            if bGotPong then
+            local bAlive = waitForEvent(10, function(t) -- Зараховується або відповідь саме на цей пінг, або проактивний alive_announce від checkMonitorCommand
+                if (t[1] ~= sMonitorProtocol) or (type(t[2]) ~= "table") then return false end
+                return ((t[2].sType == "heartbeat_pong") and (t[2].nReqId == nReqId)) or (t[2].sType == "alive_announce")
+            end)
+            if bAlive then
                 nMissed = 0
             else
                 nMissed = nMissed + 1
@@ -639,5 +661,5 @@ function tFunctionLists.goToGPS(vDestPos, vDirection, allowDig, fFuncAftMove) --
     end
 end
 
-print("#Name: ServicePrograms.lua# || #Version: 2.11.0#\n")
+print("#Name: ServicePrograms.lua# || #Version: 2.13.0#\n")
 return tFunctionLists -- Повертає таблицю, в якій знаходяться функції
