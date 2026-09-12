@@ -86,6 +86,10 @@ end
 -- Додаток "Monitor": пошук живих ПК мережі, вибір одного, перегляд і виконання його команд.
 -- checkPDAStop — реакція на внутрішній сигнал від головного меню (не зовнішній монітор-протокол, тим
 -- опікується лише меню). waitForFocus — призупиняє ввід/вивід, поки ця вкладка не в фокусі.
+--
+-- Команди беруться з локального монітора КПК (той, що в фоні на самому КПК, не з якогось конкретного
+-- цільового ПК) — припускаємо, що всі цілі мають той самий набір команд. Якщо конкретний ПК її не
+-- підтримує чи не відповів — помилка виводиться червоним і йде в журнал, решта цілей це не зупиняє.
 local function runMonitorClient()
 	while true do
 		fService.waitForFocus()
@@ -95,44 +99,45 @@ local function runMonitorClient()
 		local tPCs = pingForPCs(3)
 		if #tPCs == 0 then print("No PCs found.") return end
 
-		for i, tPC in ipairs(tPCs) do print(" ["..i.."] "..tPC.sLabel) end
-		print(" [-1] Exit")
-		write("> ")
-		local nPCChoice = tonumber(fService.fReadData("0", 5))
+		local tNames, tSelected = {}, {}
+		for i, tPC in ipairs(tPCs) do
+			tNames[i] = tPC.sLabel
+			tSelected[i] = true
+		end
 
-		if nPCChoice == -1 then
-			return -- Вихід із самого додатку — закриває лише цю вкладку, не чіпає головне меню
-		elseif (nPCChoice ~= nil) and (nPCChoice >= 1) and (nPCChoice <= #tPCs) then
-			local tPC = tPCs[nPCChoice]
-			while true do
+		local tPicked = fService.fReadScrollMenu("Select target PCs:", tNames, tSelected)
+		if tPicked == nil then return end -- Cancel
+
+		local tTargets = {}
+		for i, bSel in ipairs(tPicked) do
+			if bSel then table.insert(tTargets, tPCs[i]) end
+		end
+		if #tTargets == 0 then print("No targets selected.")
+		else
+			while true do -- Цикл команд для цієї ж групи цілей
 				fService.waitForFocus()
 				if checkPDAStop() then return end
 
-				local tListResp, sListErr = sendCommand(tPC.nId, "list_commands", {}, 5)
+				local tListResp, sListErr = sendCommand(os.getComputerID(), "list_commands", {}, 5) -- Локальний монітор КПК
 				if tListResp == nil then print("Error: "..sListErr) break end
 
-				for _, tCmd in ipairs(tListResp.tCommands) do print(tCmd.sName.." - "..tCmd.sDescription) end
-				local tNames = {}
-				for _, tCmd in ipairs(tListResp.tCommands) do table.insert(tNames, tCmd.sName) end
+				local tCmdLines = {}
+				for i, tCmd in ipairs(tListResp.tCommands) do tCmdLines[i] = tCmd.sName.." - "..tCmd.sDescription end
 
-				write("> ")
-				local sCmdName = fService.fReadData("", 5)
-				if sCmdName == "" then break end -- Повернутись до вибору ПК
+				local nCmdChoice = fService.fReadScrollMenu("Select command for "..#tTargets.." target(s):", tCmdLines, nil)
+				if nCmdChoice == nil then break end -- Назад до вибору ПК
 
-				local tWantedArgs
-				for _, tCmd in ipairs(tListResp.tCommands) do
-					if tCmd.sName == sCmdName then tWantedArgs = tCmd.tArgs end
+				local tCmd = tListResp.tCommands[nCmdChoice]
+				local tCmdArgs = {}
+				for _, sArgName in ipairs(tCmd.tArgs) do
+					write(sArgName..": ")
+					tCmdArgs[sArgName] = coerceArgValue(sArgName, fService.fReadData("", 5))
 				end
 
-				if tWantedArgs == nil then print("Unknown command")
-				else
-					local tCmdArgs = {}
-					for _, sArgName in ipairs(tWantedArgs) do
-						write(sArgName..": ")
-						tCmdArgs[sArgName] = coerceArgValue(sArgName, fService.fReadData("", 5))
-					end
-					local tResult, sSendErr = sendCommand(tPC.nId, sCmdName, tCmdArgs, 5)
-					if tResult ~= nil then print(textutils.serialize(tResult)) else print("No reply: "..tostring(sSendErr)) end
+				for _, tTarget in ipairs(tTargets) do
+					local tResult, sSendErr = sendCommand(tTarget.nId, tCmd.sName, tCmdArgs, 5)
+					if tResult ~= nil then print(tTarget.sLabel..": "..textutils.serialize(tResult))
+					else fService.logPrint("PDA", colors.red, true, tTarget.sLabel..": "..tostring(sSendErr)) end
 				end
 			end
 		end
@@ -149,7 +154,7 @@ local tApps = {
 if sMode == "app" then
 	if tApps[sAppName] ~= nil then tApps[sAppName].fnRun() end
 else
-	print("#Name: PDAMain.lua# || #Version: 1.1.0#\n")
+	print("#Name: PDAMain.lua# || #Version: 1.2.0#\n")
 	while true do
 		print(" - Select an app:")
 		local tNames = {}
