@@ -188,6 +188,12 @@ end
 --   stop          - зупиняє user-програму (до 10с на stop_ack, ще до 10с на stop_done, інакше вважає її
 --                    завислою і йде далі), потім конфіг-двигун (так само, до 5с на кожен крок) через наявний
 --                    "settings_driver_in"/"stop", надсилає в мережу {sStatus="stopped"} і перезавантажує ПК.
+--   update        - те саме, що stop, для user-програми й конфіг-двигуна (спільна функція), але замість
+--                    негайного перезавантаження двічі запускає "/deploy.lua" (другий прогін уже новою версією,
+--                    якщо перший її оновив) і лише тоді перезавантажує. Одразу шле {sType="ack"} у відповідь
+--                    і пише в журнал на початку й наприкінці — якщо запис "фінішу" не з'явився за розумний
+--                    час, це і є сигнал, що щось на цьому ПК зависло (найімовірніше — сам deploy.lua чекає
+--                    вводу без дефолту, бо прив'язана програма зникла з маніфесту) і треба перевірити вручну.
 --   list_commands - повертає список команд, які підтримує цей ПК, напряму тому, хто запитав.
 --   ping          - відповідає {sType="pong", sLabel=...} напряму запитувачу; призначено для пошуку живих
 --                   ПК мережі (широкомовний ping, кожен живий відповідає своєю міткою).
@@ -326,6 +332,23 @@ function tFunctionLists.fMonitoringDriver(spawn) --> funcStatus(boolean), return
         end
     end
 
+    -- Спільна для "stop" і "update": зупиняє user-програму (до 10с на stop_ack, ще до 10с на stop_done,
+    -- інакше вважає завислою і йде далі), потім конфіг-двигун (так само, до 5с на кожен крок). Не займає
+    -- монітор і нічого не робить після зупинки — це вирішує вже кожна команда сама.
+    local function stopUserProgramAndConfig()
+        local nReqId = os.startTimer(0) -- Використовуємо лише як унікальний ID запиту, не як реальний таймер
+        os.queueEvent(sMonitorProtocol, {sType = "stop_request", nReqId = nReqId})
+        if waitForEvent(10, function(t) return (t[1] == sMonitorProtocol) and (type(t[2]) == "table") and (t[2].sType == "stop_ack") and (t[2].nReqId == nReqId) end) then
+            waitForEvent(10, function(t) return (t[1] == sMonitorProtocol) and (type(t[2]) == "table") and (t[2].sType == "stop_done") and (t[2].nReqId == nReqId) end)
+        end -- Якщо не було навіть stop_ack — вважаємо user-програму завислою і йдемо далі, не чекаючи на неї більше
+
+        local nSettReqId = os.startTimer(0)
+        os.queueEvent("settings_driver_in", nSettReqId, "stop")
+        if waitForEvent(5, function(t) return (t[1] == "settings_driver_out") and (t[2] == nSettReqId) and (t[3] == "ack") end) then
+            waitForEvent(5, function(t) return (t[1] == "settings_driver_out") and (t[2] == nSettReqId) and (t[3] == "done") end)
+        end
+    end
+
     -- ==================== Кінець локальних функцій ====================
 
     do -- Завантажуємо журнал з диска (якщо ПК перезавантажувався)
@@ -344,20 +367,25 @@ function tFunctionLists.fMonitoringDriver(spawn) --> funcStatus(boolean), return
             sDescription = "Stop the user program and config engine, then reboot the PC",
             tArgs = {},
             fnHandler = function(tMsg, nSenderId)
-                local nReqId = os.startTimer(0) -- Використовуємо лише як унікальний ID запиту, не як реальний таймер
-                os.queueEvent(sMonitorProtocol, {sType = "stop_request", nReqId = nReqId})
-                if waitForEvent(10, function(t) return (t[1] == sMonitorProtocol) and (type(t[2]) == "table") and (t[2].sType == "stop_ack") and (t[2].nReqId == nReqId) end) then
-                    waitForEvent(10, function(t) return (t[1] == sMonitorProtocol) and (type(t[2]) == "table") and (t[2].sType == "stop_done") and (t[2].nReqId == nReqId) end)
-                end -- Якщо не було навіть stop_ack — вважаємо user-програму завислою і йдемо далі, не чекаючи на неї більше
-
-                local nSettReqId = os.startTimer(0)
-                os.queueEvent("settings_driver_in", nSettReqId, "stop")
-                if waitForEvent(5, function(t) return (t[1] == "settings_driver_out") and (t[2] == nSettReqId) and (t[3] == "ack") end) then
-                    waitForEvent(5, function(t) return (t[1] == "settings_driver_out") and (t[2] == nSettReqId) and (t[3] == "done") end)
-                end
-
+                stopUserProgramAndConfig()
                 if bNetworked then rednet.broadcast({sStatus = "stopped", sLabel = os.getComputerLabel()}, sMonitorProtocol) end
                 os.reboot()
+            end
+        },
+        update = {
+            sDescription = "Stop everything, run /deploy.lua twice (in case deploy.lua itself changes on the first run), then reboot",
+            tArgs = {},
+            fnHandler = function(tMsg, nSenderId)
+                if bNetworked and (nSenderId ~= nil) then rednet.send(nSenderId, {sType = "ack", nReqId = tMsg.nReqId}, sMonitorProtocol) end -- Негайне підтвердження, до початку довгої операції
+                tFunctionLists.logPrint("Monitor", colors.cyan, true, "Update requested, stopping and running deploy.lua")
+                spawn(function() -- Окрема гілка — довга операція не має блокувати диспетчеризацію інших команд
+                    stopUserProgramAndConfig()
+                    shell.run("/deploy.lua")
+                    shell.run("/deploy.lua") -- Другий прогін — уже новим deploy.lua з диска, якщо перший прогін його оновив
+                    tFunctionLists.logPrint("Monitor", colors.cyan, true, "Update finished, rebooting")
+                    if bNetworked then rednet.broadcast({sStatus = "updated", sLabel = os.getComputerLabel()}, sMonitorProtocol) end
+                    os.reboot()
+                end)
             end
         },
         list_commands = {
@@ -671,6 +699,6 @@ function tFunctionLists.goToGPS(vDestPos, vDirection, allowDig, fFuncAftMove) --
     end
 end
 
-print("#Name: ServicePrograms.lua# || #Version: 2.15.0#\n")
+print("#Name: ServicePrograms.lua# || #Version: 2.16.0#\n")
 tFunctionLists.sMonitorProtocol = sMonitorProtocol -- Назва протоколу rednet монітора, для програм, що самі спілкуються мережею (наприклад, КПК)
 return tFunctionLists -- Повертає таблицю, в якій знаходяться функції
