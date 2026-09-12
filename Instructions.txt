@@ -11,3 +11,4 @@
 #User="sPath='User/Turtle_MahouCraft.lua', sDependencies='', sLaunchMode='',  sStartupArgs='', sTags='MahouTsukai,Crafter,Turtle'"
 #User="sPath='User/PC_AstralInfuserCrafter_WithIntegrated.lua', sDependencies='', sLaunchMode='',  sStartupArgs='', sTags='AstralInfuser,Integrated,Crafter,Turtle'"
 #User="sPath='User/TestPC.lua', sDependencies='', sLaunchMode='',  sStartupArgs='', sTags='Test,PC'"
+#User="sPath='User/PDAMain.lua', sDependencies='', sLaunchMode='multishell', sStartupArgs='', sTags='PDA,KPK'"

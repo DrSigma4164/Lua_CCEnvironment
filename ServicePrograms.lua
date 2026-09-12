@@ -169,6 +169,16 @@ function tFunctionLists.checkMonitorCommand(fnStop) --> bWasStopped(boolean)
     return true
 end
 
+-- Функція для вставки в цикл програми, що працює у власній вкладці multishell: якщо вкладка зараз не в
+-- фокусі — призупиняє виконання (не блокуючи диспетчеризацію в інших вкладках, лише цю саму гілку), поки
+-- фокус не повернеться, перевіряючи це раз на секунду. Якщо multishell недоступний — нічого не робить.
+function tFunctionLists.waitForFocus() --> nil
+    if multishell == nil then return end
+    while multishell.getFocus() ~= multishell.getCurrent() do
+        sleep(1)
+    end
+end
+
 -- Функція моніторинг-двигуна. Піднімає мережу (якщо є бездротовий модем) під протоколом sMonitorProtocol.
 -- Локальні команди (для тестування, напряму через os.queueEvent) і мережеві команди від КПК обробляються
 -- через одну диспетчер-таблицю (tCommands) — додати нову команду означає лише додати новий запис туди,
@@ -661,5 +671,6 @@ function tFunctionLists.goToGPS(vDestPos, vDirection, allowDig, fFuncAftMove) --
     end
 end
 
-print("#Name: ServicePrograms.lua# || #Version: 2.13.0#\n")
+print("#Name: ServicePrograms.lua# || #Version: 2.15.0#\n")
+tFunctionLists.sMonitorProtocol = sMonitorProtocol -- Назва протоколу rednet монітора, для програм, що самі спілкуються мережею (наприклад, КПК)
 return tFunctionLists -- Повертає таблицю, в якій знаходяться функції
