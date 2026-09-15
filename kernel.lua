@@ -19,14 +19,14 @@ for i = 3, #tArgs do table.insert(tProgramArgs, tArgs[i]) end
 -- йдуть через waitForAll — їм вкладки не потрібні, це фонові сервіси.
 local function runProgram()
 	if (sLaunchMode == "multishell") and (multishell ~= nil) then
-		multishell.launch({}, sProgramPath, table.unpack(tProgramArgs)) -- Повертається одразу після відкриття вкладки — waitForAll це не порушує, бо все одно далі чекає конфіг-двигун і монітор
+		shell.openTab(sProgramPath, table.unpack(tProgramArgs)) -- Повертається одразу після відкриття вкладки — waitForAll це не порушує, бо все одно далі чекає конфіг-двигун і монітор. shell.openTab, а не multishell.launch напряму — саме він готує оточення програми (зокрема require), multishell.launch з порожнім оточенням цього не робить
 	else
 		if (sLaunchMode == "multishell") then fService.logPrint("Kernel", colors.red, true, "multishell requested but unavailable (requires Advanced Computer) — launching normally") end
 		shell.run(sProgramPath, table.unpack(tProgramArgs))
 	end
 end
 
-print("#Name: kernel.lua# || #Version: 1.4.0#\n")
+print("#Name: kernel.lua# || #Version: 1.5.0#\n")
 
 local bOk, sErr = pcall(parallel.waitForAll, runProgram, fService.fSettingsDriver, fService.fMonitoringDriver)
 if not bOk then -- Якщо будь-яка з трьох гілок впала з необробленою помилкою (не за штатною командою "стоп")
