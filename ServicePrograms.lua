@@ -21,6 +21,11 @@ local function waitForEvent(nTimerTime, fEventCher) --> bFound(boolean)
 	end
 end
 
+-- Локальна (не через rednet) координація на sMonitorProtocol завжди йде рядком: os.queueEvent клонує таблиці
+-- на межі вкладок multishell і губить вкладені структури (підтверджено: github.com/cc-tweaked/CC-Tweaked/issues/831).
+-- Тому нижче на кожен os.queueEvent(sMonitorProtocol, ...) — textutils.serialize({...}), і на кожен прийом —
+-- textutils.unserialize(...). rednet.send/broadcast цієї проблеми не мають, там серіалізація не потрібна.
+
 -- Функція друку з тегом джерела і кольором (як у docker compose: "ConfEngine | текст"). Якщо термінал
 -- не кольоровий — просто тег без кольору. Відсутність тегу означає, що пише незмінена стара user-програма.
 -- bJournal — чи додатково зберегти цей рядок у спільний журнал мережі (подія до монітора, він може бути
@@ -36,7 +41,7 @@ function tFunctionLists.logPrint(sSource, nColor, bJournal, ...) --> nil
 	print(sSource .. " | " .. sLine)
 	if term.isColor() then term.setTextColor(colors.white) end
 	if bJournal ~= false then
-		os.queueEvent(sMonitorProtocol, {sType = "journal", sAction = "new", tEntry = {nTime = os.epoch("utc"), sLabel = os.getComputerLabel(), sSource = sSource, sMessage = sLine}})
+		os.queueEvent(sMonitorProtocol, textutils.serialize({sType = "journal", sAction = "new", tEntry = {nTime = os.epoch("utc"), sLabel = os.getComputerLabel(), sSource = sSource, sMessage = sLine}}))
 	end
 end
 
@@ -160,21 +165,23 @@ function tFunctionLists.checkMonitorCommand(fnStop) --> bWasStopped(boolean)
     expect.expect(1, fnStop, "function")
     if (os.epoch("utc") - nLastAliveAnnounce) > nAliveAnnounceIntervalMs then
         nLastAliveAnnounce = os.epoch("utc")
-        os.queueEvent(sMonitorProtocol, {sType = "alive_announce"})
+        os.queueEvent(sMonitorProtocol, textutils.serialize({sType = "alive_announce"}))
     end
 
     local tMsg
     local bGotSignal = waitForEvent(0, function(t)
-        if (t[1] == sMonitorProtocol) and (type(t[2]) == "table") and ((t[2].sType == "stop_request") or (t[2].sType == "heartbeat_ping")) then tMsg = t[2] return true end
+        if t[1] ~= sMonitorProtocol then return false end
+        local tData = textutils.unserialize(t[2])
+        if (tData ~= nil) and ((tData.sType == "stop_request") or (tData.sType == "heartbeat_ping")) then tMsg = tData return true end
     end)
     if not bGotSignal then return false end
     if tMsg.sType == "heartbeat_ping" then
-        os.queueEvent(sMonitorProtocol, {sType = "heartbeat_pong", nReqId = tMsg.nReqId})
+        os.queueEvent(sMonitorProtocol, textutils.serialize({sType = "heartbeat_pong", nReqId = tMsg.nReqId}))
         return false
     end
-    os.queueEvent(sMonitorProtocol, {sType = "stop_ack", nReqId = tMsg.nReqId})
+    os.queueEvent(sMonitorProtocol, textutils.serialize({sType = "stop_ack", nReqId = tMsg.nReqId}))
     local bOk, sErr = fnStop()
-    os.queueEvent(sMonitorProtocol, {sType = "stop_done", nReqId = tMsg.nReqId, bOk = bOk, sErrorMsg = sErr})
+    os.queueEvent(sMonitorProtocol, textutils.serialize({sType = "stop_done", nReqId = tMsg.nReqId, bOk = bOk, sErrorMsg = sErr}))
     return true
 end
 
@@ -458,9 +465,17 @@ function tFunctionLists.fMonitoringDriver(spawn) --> funcStatus(boolean), return
     -- монітор і нічого не робить після зупинки — це вирішує вже кожна команда сама.
     local function stopUserProgramAndConfig()
         local nReqId = os.startTimer(0) -- Використовуємо лише як унікальний ID запиту, не як реальний таймер
-        os.queueEvent(sMonitorProtocol, {sType = "stop_request", nReqId = nReqId})
-        if waitForEvent(10, function(t) return (t[1] == sMonitorProtocol) and (type(t[2]) == "table") and (t[2].sType == "stop_ack") and (t[2].nReqId == nReqId) end) then
-            waitForEvent(10, function(t) return (t[1] == sMonitorProtocol) and (type(t[2]) == "table") and (t[2].sType == "stop_done") and (t[2].nReqId == nReqId) end)
+        os.queueEvent(sMonitorProtocol, textutils.serialize({sType = "stop_request", nReqId = nReqId}))
+        if waitForEvent(10, function(t)
+            if t[1] ~= sMonitorProtocol then return false end
+            local tData = textutils.unserialize(t[2])
+            return (tData ~= nil) and (tData.sType == "stop_ack") and (tData.nReqId == nReqId)
+        end) then
+            waitForEvent(10, function(t)
+                if t[1] ~= sMonitorProtocol then return false end
+                local tData = textutils.unserialize(t[2])
+                return (tData ~= nil) and (tData.sType == "stop_done") and (tData.nReqId == nReqId)
+            end)
         end -- Якщо не було навіть stop_ack — вважаємо user-програму завислою і йдемо далі, не чекаючи на неї більше
 
         local nSettReqId = os.startTimer(0)
@@ -519,7 +534,7 @@ function tFunctionLists.fMonitoringDriver(spawn) --> funcStatus(boolean), return
                 end
                 local tResponse = {sType = "command_list", nReqId = tMsg.nReqId, tCommands = tList}
                 if nSenderId ~= nil then rednet.send(nSenderId, tResponse, sMonitorProtocol)
-                else os.queueEvent(sMonitorProtocol, tResponse) end -- Лише для локального тестування простих полів — вкладені структури (як tCommands тут) губляться при os.queueEvent між вкладками multishell (github.com/cc-tweaked/CC-Tweaked/issues/831), тому реальні запити завжди йдуть через rednet, навіть до себе
+                else os.queueEvent(sMonitorProtocol, textutils.serialize(tResponse)) end -- Локальний запит — рядком, а не таблицею
             end
         },
         ping = {
@@ -619,10 +634,12 @@ function tFunctionLists.fMonitoringDriver(spawn) --> funcStatus(boolean), return
         while true do
             sleep(10)
             local nReqId = os.startTimer(0) -- Використовуємо лише як унікальний ID запиту, не як реальний таймер
-            os.queueEvent(sMonitorProtocol, {sType = "heartbeat_ping", nReqId = nReqId})
+            os.queueEvent(sMonitorProtocol, textutils.serialize({sType = "heartbeat_ping", nReqId = nReqId}))
             local bAlive = waitForEvent(10, function(t) -- Зараховується або відповідь саме на цей пінг, або проактивний alive_announce від checkMonitorCommand
-                if (t[1] ~= sMonitorProtocol) or (type(t[2]) ~= "table") then return false end
-                return ((t[2].sType == "heartbeat_pong") and (t[2].nReqId == nReqId)) or (t[2].sType == "alive_announce")
+                if t[1] ~= sMonitorProtocol then return false end
+                local tData = textutils.unserialize(t[2])
+                if tData == nil then return false end
+                return ((tData.sType == "heartbeat_pong") and (tData.nReqId == nReqId)) or (tData.sType == "alive_announce")
             end)
             if bAlive then
                 nMissed = 0
@@ -641,8 +658,9 @@ function tFunctionLists.fMonitoringDriver(spawn) --> funcStatus(boolean), return
         local sEventName, a, b, c = os.pullEvent()
         if bNetworked and (sEventName == "rednet_message") and (c == sMonitorProtocol) and (type(b) == "table") and (tCommands[b.sType] ~= nil) then
             tCommands[b.sType].fnHandler(b, a) -- b = саме повідомлення, a = ID відправника
-        elseif (sEventName == sMonitorProtocol) and (type(a) == "table") and (tCommands[a.sType] ~= nil) then
-            tCommands[a.sType].fnHandler(a, nil) -- Локальна подія (для тестування) — немає мережевого відправника, щоб відповідати
+        elseif sEventName == sMonitorProtocol then
+            local tMsg = textutils.unserialize(a) -- Локальна подія — завжди рядок, немає мережевого відправника, щоб відповідати
+            if (tMsg ~= nil) and (tCommands[tMsg.sType] ~= nil) then tCommands[tMsg.sType].fnHandler(tMsg, nil) end
         end
     end
 
@@ -822,6 +840,6 @@ function tFunctionLists.goToGPS(vDestPos, vDirection, allowDig, fFuncAftMove) --
     end
 end
 
-print("#Name: ServicePrograms.lua# || #Version: 2.20.0#\n")
+print("#Name: ServicePrograms.lua# || #Version: 2.22.0#\n")
 tFunctionLists.sMonitorProtocol = sMonitorProtocol -- Назва протоколу rednet монітора, для програм, що самі спілкуються мережею (наприклад, КПК)
 return tFunctionLists -- Повертає таблицю, в якій знаходяться функції
