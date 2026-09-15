@@ -66,12 +66,20 @@ end
 -- монітор на своєму боці вже вміє так відповідати), не через rednet: самоадресований rednet.send технічно
 -- підтримується, але через відомий баг rednet.receive на тому самому ПК отримує службову обгортку замість
 -- самого повідомлення (github.com/cc-tweaked/CC-Tweaked/issues/1308).
+-- Шле команду sType з аргументами tArgs конкретному ПК (nId) і чекає відповідь із тим самим nReqId, до nTimeout
+-- секунд. До себе самого (nId == os.getComputerID()) — локальною подією, не через rednet: самоадресований
+-- rednet.send технічно підтримується, але через відомий баг rednet.receive на тому самому ПК отримує службову
+-- обгортку замість самого повідомлення (github.com/cc-tweaked/CC-Tweaked/issues/1308).
+-- Відповідь на локальний запит іде НЕ каналом sMonitorProtocol (яким іде сам запит), а окремим, унікальним
+-- для цього nReqId — інакше os.queueEvent кладе подію в спільну чергу, і той самий os.pullEvent() нижче міг
+-- би підхопити власний щойно надісланий запит, переплутавши його з відповіддю (обидва мають той самий nReqId).
 local function sendCommand(nId, sType, tArgs, nTimeout) --> tResponse(table) | nil, sError(string) | nil
 	local nReqId = os.startTimer(0) -- Лише унікальний ID запиту, не реальний таймер
 	local tMsg = {sType = sType, nReqId = nReqId}
 	for sKey, vValue in pairs(tArgs) do tMsg[sKey] = vValue end
 
 	local bIsSelf = (nId == os.getComputerID())
+	local sReplyChannel = fService.sMonitorProtocol.."_reply_"..nReqId
 	if bIsSelf then os.queueEvent(fService.sMonitorProtocol, textutils.serialize(tMsg))
 	else rednet.send(nId, tMsg, fService.sMonitorProtocol) end
 
@@ -79,9 +87,9 @@ local function sendCommand(nId, sType, tArgs, nTimeout) --> tResponse(table) | n
 	while true do
 		local sEvent, a, b, c = os.pullEvent()
 		if (sEvent == "timer") and (a == nTimerId) then return nil, "Timeout waiting for response" end
-		if bIsSelf and (sEvent == fService.sMonitorProtocol) then
+		if bIsSelf and (sEvent == sReplyChannel) then
 			local tResp = textutils.unserialize(a)
-			if (tResp ~= nil) and (tResp.nReqId == nReqId) then return tResp end
+			if tResp ~= nil then return tResp end
 		end
 		if (not bIsSelf) and (sEvent == "rednet_message") and (a == nId) and (c == fService.sMonitorProtocol) and (type(b) == "table") and (b.nReqId == nReqId) then return b end
 	end
@@ -125,6 +133,13 @@ local function runMonitorClient()
 		for i, bSel in ipairs(tPicked) do
 			if bSel then table.insert(tTargets, tPCs[i]) end
 		end
+
+		local nSelfIdx -- Якщо серед обраних є цей самий ПК — переносимо його в кінець списку: команди типу
+		for i, tTarget in ipairs(tTargets) do -- "update"/"stop" зупиняють чи перезавантажують ПК, з якого йде розсилка,
+			if tTarget.nId == os.getComputerID() then nSelfIdx = i break end -- тож решта цілей мають отримати команду першими, а не залишитись без неї через переривання цього циклу
+		end
+		if nSelfIdx ~= nil then table.insert(tTargets, table.remove(tTargets, nSelfIdx)) end
+
 		if #tTargets == 0 then print("No targets selected.")
 		else
 			while true do -- Цикл команд для цієї ж групи цілей

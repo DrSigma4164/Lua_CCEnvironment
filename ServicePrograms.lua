@@ -534,7 +534,7 @@ function tFunctionLists.fMonitoringDriver(spawn) --> funcStatus(boolean), return
                 end
                 local tResponse = {sType = "command_list", nReqId = tMsg.nReqId, tCommands = tList}
                 if nSenderId ~= nil then rednet.send(nSenderId, tResponse, sMonitorProtocol)
-                else os.queueEvent(sMonitorProtocol, textutils.serialize(tResponse)) end -- Локальний запит — рядком, а не таблицею
+                else os.queueEvent(sMonitorProtocol.."_reply_"..tMsg.nReqId, textutils.serialize(tResponse)) end -- Окремий канал за nReqId — інакше цю ж подію на sMonitorProtocol міг би підхопити диспетчер знову як новий запит
             end
         },
         ping = {
