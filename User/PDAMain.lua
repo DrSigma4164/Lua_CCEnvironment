@@ -56,6 +56,7 @@ local function pingForPCs(nTimeout) --> tPCs(table) -- масив {sLabel, nId}
 			table.insert(tPCs, {sLabel = b.sLabel, nId = a})
 		end
 	until (sEvent == "timer") and (a == nTimerId)
+	table.sort(tPCs, function(x, y) return x.sLabel < y.sLabel end) -- Порядок відповідей мережею непередбачуваний — сортуємо за міткою для стабільного списку
 	return tPCs
 end
 
@@ -146,15 +147,19 @@ end
 
 -- ==================== End func for Monitor ====================
 
--- Реєстр додатків: назва → опис і функція реалізації. Новий додаток — новий запис тут, більше нічого міняти не треба
+-- Реєстр додатків: назва → опис, коротка назва вкладки і функція реалізації. Новий додаток — новий запис тут,
+-- більше нічого міняти не треба. sTabTitle необов'язковий — якщо не вказано, вкладка лишається з назвою файлу.
 local tApps = {
-	Monitor = {sDescription = "Send commands to a PC's monitor", fnRun = runMonitorClient},
+	Monitor = {sDescription = "Send commands to a PC's monitor", sTabTitle = "SendComm", fnRun = runMonitorClient},
 }
 
 if sMode == "app" then
-	if tApps[sAppName] ~= nil then tApps[sAppName].fnRun() end
+	if tApps[sAppName] ~= nil then
+		if (multishell ~= nil) and (tApps[sAppName].sTabTitle ~= nil) then multishell.setTitle(multishell.getCurrent(), tApps[sAppName].sTabTitle) end
+		tApps[sAppName].fnRun()
+	end
 else
-	print("#Name: PDAMain.lua# || #Version: 1.3.1#\n")
+	print("#Name: PDAMain.lua# || #Version: 1.4.0#\n")
 	while true do
 		print(" - Select an app:")
 		local tNames = {}

@@ -202,7 +202,7 @@ end
 --         залежно від того, чи зараз усі позначені). Enter на номері перемикає позначку цього пункту.
 --         Повертає tSelected(table) | nil (при -1).
 --
--- ^/v — прокрутка на половину видимої висоти списку. Список коротший за екран — стрілки просто нічого
+-- ↑/↓ — прокрутка на половину видимої висоти списку. Список коротший за екран — стрілки просто нічого
 -- не роблять. Один пункт, довший за всю видиму висоту сам по собі — теоретично можливо, спеціально не
 -- обробляється, просто виведеться повністю, трохи витіснивши межу видимої області за той кадр.
 function tFunctionLists.fReadScrollMenu(sHeader, tItems, tSelected) --> tSelected(table) | nSingleChoice(number) | nil
@@ -243,7 +243,7 @@ function tFunctionLists.fReadScrollMenu(sHeader, tItems, tSelected) --> tSelecte
             if nSkipped + tItemRows[i] > nScrollOffset then
                 if nRow >= nListHeight then break end
                 local sMark = bMultiSelect and (tSelected[i] and "[*] " or "[ ] ") or ""
-                print(" ["..i.."] "..sMark..sItem)
+                print("["..i.."] "..sMark..sItem)
                 nRow = nRow + tItemRows[i]
             end
             nSkipped = nSkipped + tItemRows[i]
@@ -820,6 +820,6 @@ function tFunctionLists.goToGPS(vDestPos, vDirection, allowDig, fFuncAftMove) --
     end
 end
 
-print("#Name: ServicePrograms.lua# || #Version: 2.17.0#\n")
+print("#Name: ServicePrograms.lua# || #Version: 2.18.0#\n")
 tFunctionLists.sMonitorProtocol = sMonitorProtocol -- Назва протоколу rednet монітора, для програм, що самі спілкуються мережею (наприклад, КПК)
 return tFunctionLists -- Повертає таблицю, в якій знаходяться функції
