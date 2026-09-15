@@ -517,7 +517,9 @@ function tFunctionLists.fMonitoringDriver(spawn) --> funcStatus(boolean), return
                 for sName, tCmd in pairs(tCommands) do
                     table.insert(tList, {sName = sName, sDescription = tCmd.sDescription, tArgs = tCmd.tArgs})
                 end
-                rednet.send(nSenderId, {sType = "command_list", nReqId = tMsg.nReqId, tCommands = tList}, sMonitorProtocol)
+                local tResponse = {sType = "command_list", nReqId = tMsg.nReqId, tCommands = tList}
+                if nSenderId ~= nil then rednet.send(nSenderId, tResponse, sMonitorProtocol)
+                else os.queueEvent(sMonitorProtocol, tResponse) end
             end
         },
         ping = {
@@ -820,6 +822,6 @@ function tFunctionLists.goToGPS(vDestPos, vDirection, allowDig, fFuncAftMove) --
     end
 end
 
-print("#Name: ServicePrograms.lua# || #Version: 2.18.0#\n")
+print("#Name: ServicePrograms.lua# || #Version: 2.19.0#\n")
 tFunctionLists.sMonitorProtocol = sMonitorProtocol -- Назва протоколу rednet монітора, для програм, що самі спілкуються мережею (наприклад, КПК)
 return tFunctionLists -- Повертає таблицю, в якій знаходяться функції

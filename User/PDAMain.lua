@@ -41,13 +41,14 @@ end
 -- ==================== Func for Monitor ====================
 
 -- Пінгує мережу і за nTimeout секунд збирає мітки й ID усіх, хто відповів (дедуп за міткою)
-local function pingForPCs(nTimeout) --> tPCs(table) -- масив {sLabel, nId}
+local function pingForPCs(nTimeout) --> tPCs(table) -- масив {sLabel, nId}, завжди включно з власним ПК
+	local tPCs, tSeen = {{sLabel = os.getComputerLabel(), nId = os.getComputerID()}}, {[os.getComputerLabel()] = true} -- Власний ПК додаємо напряму, а не через ping — самоадресований rednet ненадійний
+
 	local modem = peripheral.find("modem", function(_, m) return m.isWireless() end)
-	if modem == nil then return {} end
+	if modem == nil then return tPCs end
 	if not rednet.isOpen(peripheral.getName(modem)) then rednet.open(peripheral.getName(modem)) end
 	rednet.broadcast({sType = "ping"}, fService.sMonitorProtocol)
 
-	local tPCs, tSeen = {}, {}
 	local nTimerId = os.startTimer(nTimeout)
 	repeat
 		local sEvent, a, b, c = os.pullEvent()
@@ -65,13 +66,16 @@ local function sendCommand(nId, sType, tArgs, nTimeout) --> tResponse(table) | n
 	local nReqId = os.startTimer(0) -- Лише унікальний ID запиту, не реальний таймер
 	local tMsg = {sType = sType, nReqId = nReqId}
 	for sKey, vValue in pairs(tArgs) do tMsg[sKey] = vValue end
-	rednet.send(nId, tMsg, fService.sMonitorProtocol)
+
+	local bIsSelf = (nId == os.getComputerID()) -- Запит до власного монітора — локальною подією, не через rednet (самоадресований rednet ненадійний)
+	if bIsSelf then os.queueEvent(fService.sMonitorProtocol, tMsg) else rednet.send(nId, tMsg, fService.sMonitorProtocol) end
 
 	local nTimerId = os.startTimer(nTimeout)
 	while true do
 		local sEvent, a, b, c = os.pullEvent()
 		if (sEvent == "timer") and (a == nTimerId) then return nil, "Timeout waiting for response" end
-		if (sEvent == "rednet_message") and (a == nId) and (c == fService.sMonitorProtocol) and (type(b) == "table") and (b.nReqId == nReqId) then return b end
+		if bIsSelf and (sEvent == fService.sMonitorProtocol) and (type(a) == "table") and (a.nReqId == nReqId) then return a end
+		if (not bIsSelf) and (sEvent == "rednet_message") and (a == nId) and (c == fService.sMonitorProtocol) and (type(b) == "table") and (b.nReqId == nReqId) then return b end
 	end
 end
 
@@ -94,7 +98,7 @@ end
 local function runMonitorClient()
 	while true do
 		fService.waitForFocus()
-		if checkPDAStop() then return end
+		if checkPDAStop() then print("Stopping...") sleep(2) return end
 
 		print("Pinging network...")
 		local tPCs = pingForPCs(3)
@@ -107,7 +111,7 @@ local function runMonitorClient()
 		end
 
 		local tPicked = fService.fReadScrollMenu("Select target PCs:", tNames, tSelected)
-		if tPicked == nil then return end -- Cancel
+		if tPicked == nil then print("Cancelled.") sleep(2) return end
 
 		local tTargets = {}
 		for i, bSel in ipairs(tPicked) do
@@ -117,10 +121,10 @@ local function runMonitorClient()
 		else
 			while true do -- Цикл команд для цієї ж групи цілей
 				fService.waitForFocus()
-				if checkPDAStop() then return end
+				if checkPDAStop() then print("Stopping...") sleep(2) return end
 
 				local tListResp, sListErr = sendCommand(os.getComputerID(), "list_commands", {}, 5) -- Локальний монітор КПК
-				if tListResp == nil then print("Error: "..sListErr) break end
+				if tListResp == nil then print("Error: "..sListErr) sleep(2) break end
 
 				local tCmdLines = {}
 				for i, tCmd in ipairs(tListResp.tCommands) do tCmdLines[i] = tCmd.sName.." - "..tCmd.sDescription end
@@ -140,6 +144,7 @@ local function runMonitorClient()
 					if tResult ~= nil then print(tTarget.sLabel..": "..textutils.serialize(tResult))
 					else fService.logPrint("PDA", colors.red, true, tTarget.sLabel..": "..tostring(sSendErr)) end
 				end
+				sleep(2) -- Час прочитати результати перед наступною перемальовкою (вибір команди знову)
 			end
 		end
 	end
@@ -159,7 +164,7 @@ if sMode == "app" then
 		tApps[sAppName].fnRun()
 	end
 else
-	print("#Name: PDAMain.lua# || #Version: 1.4.0#\n")
+	print("#Name: PDAMain.lua# || #Version: 1.5.0#\n")
 	while true do
 		print(" - Select an app:")
 		local tNames = {}
