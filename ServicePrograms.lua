@@ -519,7 +519,7 @@ function tFunctionLists.fMonitoringDriver(spawn) --> funcStatus(boolean), return
                 end
                 local tResponse = {sType = "command_list", nReqId = tMsg.nReqId, tCommands = tList}
                 if nSenderId ~= nil then rednet.send(nSenderId, tResponse, sMonitorProtocol)
-                else os.queueEvent(sMonitorProtocol, tResponse) end
+                else os.queueEvent(sMonitorProtocol, tResponse) end -- Лише для локального тестування простих полів — вкладені структури (як tCommands тут) губляться при os.queueEvent між вкладками multishell (github.com/cc-tweaked/CC-Tweaked/issues/831), тому реальні запити завжди йдуть через rednet, навіть до себе
             end
         },
         ping = {
@@ -822,6 +822,6 @@ function tFunctionLists.goToGPS(vDestPos, vDirection, allowDig, fFuncAftMove) --
     end
 end
 
-print("#Name: ServicePrograms.lua# || #Version: 2.19.0#\n")
+print("#Name: ServicePrograms.lua# || #Version: 2.20.0#\n")
 tFunctionLists.sMonitorProtocol = sMonitorProtocol -- Назва протоколу rednet монітора, для програм, що самі спілкуються мережею (наприклад, КПК)
 return tFunctionLists -- Повертає таблицю, в якій знаходяться функції

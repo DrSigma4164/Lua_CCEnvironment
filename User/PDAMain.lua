@@ -42,7 +42,7 @@ end
 
 -- Пінгує мережу і за nTimeout секунд збирає мітки й ID усіх, хто відповів (дедуп за міткою)
 local function pingForPCs(nTimeout) --> tPCs(table) -- масив {sLabel, nId}, завжди включно з власним ПК
-	local tPCs, tSeen = {{sLabel = os.getComputerLabel(), nId = os.getComputerID()}}, {[os.getComputerLabel()] = true} -- Власний ПК додаємо напряму, а не через ping — самоадресований rednet ненадійний
+	local tPCs, tSeen = {{sLabel = os.getComputerLabel(), nId = os.getComputerID()}}, {[os.getComputerLabel()] = true} -- Власний ПК додаємо напряму до списку відображення, окремо від запитів через rednet
 
 	local modem = peripheral.find("modem", function(_, m) return m.isWireless() end)
 	if modem == nil then return tPCs end
@@ -61,21 +61,21 @@ local function pingForPCs(nTimeout) --> tPCs(table) -- масив {sLabel, nId},
 	return tPCs
 end
 
--- Шле команду sType з аргументами tArgs конкретному ПК (nId) і чекає відповідь із тим самим nReqId, до nTimeout секунд
+-- Шле команду sType з аргументами tArgs конкретному ПК (nId) і чекає відповідь із тим самим nReqId, до nTimeout
+-- секунд. Завжди через справжній rednet, навіть до себе самого — os.queueEvent клонує таблиці на межі
+-- вкладок multishell і губить вкладені структури (підтверджено: github.com/cc-tweaked/CC-Tweaked/issues/831),
+-- тоді як rednet передає складні дані коректно.
 local function sendCommand(nId, sType, tArgs, nTimeout) --> tResponse(table) | nil, sError(string) | nil
 	local nReqId = os.startTimer(0) -- Лише унікальний ID запиту, не реальний таймер
 	local tMsg = {sType = sType, nReqId = nReqId}
 	for sKey, vValue in pairs(tArgs) do tMsg[sKey] = vValue end
-
-	local bIsSelf = (nId == os.getComputerID()) -- Запит до власного монітора — локальною подією, не через rednet (самоадресований rednet ненадійний)
-	if bIsSelf then os.queueEvent(fService.sMonitorProtocol, tMsg) else rednet.send(nId, tMsg, fService.sMonitorProtocol) end
+	rednet.send(nId, tMsg, fService.sMonitorProtocol)
 
 	local nTimerId = os.startTimer(nTimeout)
 	while true do
 		local sEvent, a, b, c = os.pullEvent()
 		if (sEvent == "timer") and (a == nTimerId) then return nil, "Timeout waiting for response" end
-		if bIsSelf and (sEvent == fService.sMonitorProtocol) and (type(a) == "table") and (a.nReqId == nReqId) then return a end
-		if (not bIsSelf) and (sEvent == "rednet_message") and (a == nId) and (c == fService.sMonitorProtocol) and (type(b) == "table") and (b.nReqId == nReqId) then return b end
+		if (sEvent == "rednet_message") and (a == nId) and (c == fService.sMonitorProtocol) and (type(b) == "table") and (b.nReqId == nReqId) then return b end
 	end
 end
 
@@ -88,7 +88,7 @@ local function coerceArgValue(sArgName, sRawValue) --> value(any)
 	else return sRawValue end
 end
 
--- Додаток "Monitor": пошук живих ПК мережі, вибір одного, перегляд і виконання його команд.
+-- Додаток "Monitor": пошук живих ПК мережі, вибір кількох, перегляд і виконання команд обраного набору цілей.
 -- checkPDAStop — реакція на внутрішній сигнал від головного меню (не зовнішній монітор-протокол, тим
 -- опікується лише меню). waitForFocus — призупиняє ввід/вивід, поки ця вкладка не в фокусі.
 --
@@ -164,7 +164,7 @@ if sMode == "app" then
 		tApps[sAppName].fnRun()
 	end
 else
-	print("#Name: PDAMain.lua# || #Version: 1.5.0#\n")
+	print("#Name: PDAMain.lua# || #Version: 1.6.0#\n")
 	while true do
 		print(" - Select an app:")
 		local tNames = {}
@@ -178,7 +178,9 @@ else
 		fService.checkMonitorCommand(stopPDA)
 
 		if (nChoice ~= nil) and (nChoice >= 1) and (nChoice <= #tNames) then
-			if multishell ~= nil then shell.openTab(shell.getRunningProgram(), "app", tNames[nChoice]) -- shell.openTab, не multishell.launch — готує повне оточення програми (зокрема require)
+			if multishell ~= nil then
+				local nNewTab = shell.openTab(shell.getRunningProgram(), "app", tNames[nChoice]) -- shell.openTab, не multishell.launch — готує повне оточення програми (зокрема require)
+				if nNewTab ~= nil then multishell.setFocus(nNewTab) end
 			else print("multishell unavailable (requires Advanced Computer) — cannot open as a tab.") end
 		end
 		print() print() -- Два порожні рядки — щоб повторні перемальовки меню (кожні 5с без вводу) не зливались в суцільний текст
