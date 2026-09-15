@@ -171,9 +171,10 @@ local function writeProgramSettings(settingTable, curdir) --> nil | isError(stri
 	local sSettErr = serialToFile(curdir .. defaultFolderName .. localSettingsList_Name, settingTable) -- Записуємо в файл налаштувань самі налаштування
 	if sSettErr then return sSettErr end
 
+	local sLaunchModeArg = (settingTable.S_pinLaunchMode ~= "") and settingTable.S_pinLaunchMode or "default" -- Порожній рядок аргументом у shell.run десь по дорозі зникає (токенізація), тому нейтральна заглушка замість ""
 	local foutStartup = fs.open("/startup.lua", "w") -- Записуємо в файл стартапу потрібні дані
 	if foutStartup == nil then return "userProgError: cannot open startup file for writing." end
-	foutStartup.write('shell.run("'..curdir..defaultFolderName..'kernel.lua", "'..settingTable.S_pinLaunchMode..'", "'..curdir..defaultFolderName..settingTable.S_pinProgramm..'.lua"'..settingTable.S_pinStartArgs..')')
+	foutStartup.write('shell.run("'..curdir..defaultFolderName..'kernel.lua", "'..sLaunchModeArg..'", "'..curdir..defaultFolderName..settingTable.S_pinProgramm..'.lua"'..settingTable.S_pinStartArgs..')')
 	foutStartup.close()
 
 	return nil
@@ -479,5 +480,5 @@ end
 
 -- Безпосередній запуск "розпаковки" середовища з GitHub
 local args = {...}
-print("#Name: deploy.lua# || #Version: 2.8.1#\n")
+print("#Name: deploy.lua# || #Version: 2.9.0#\n")
 clone(args[1], args[2])

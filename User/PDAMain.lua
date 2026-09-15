@@ -97,7 +97,7 @@ local function runMonitorClient()
 
 		print("Pinging network...")
 		local tPCs = pingForPCs(3)
-		if #tPCs == 0 then print("No PCs found.") return end
+		if #tPCs == 0 then print("No PCs found.") sleep(2) return end
 
 		local tNames, tSelected = {}, {}
 		for i, tPC in ipairs(tPCs) do
@@ -154,7 +154,7 @@ local tApps = {
 if sMode == "app" then
 	if tApps[sAppName] ~= nil then tApps[sAppName].fnRun() end
 else
-	print("#Name: PDAMain.lua# || #Version: 1.3.0#\n")
+	print("#Name: PDAMain.lua# || #Version: 1.3.1#\n")
 	while true do
 		print(" - Select an app:")
 		local tNames = {}
@@ -171,5 +171,6 @@ else
 			if multishell ~= nil then shell.openTab(shell.getRunningProgram(), "app", tNames[nChoice]) -- shell.openTab, не multishell.launch — готує повне оточення програми (зокрема require)
 			else print("multishell unavailable (requires Advanced Computer) — cannot open as a tab.") end
 		end
+		print() print() -- Два порожні рядки — щоб повторні перемальовки меню (кожні 5с без вводу) не зливались в суцільний текст
 	end
 end
