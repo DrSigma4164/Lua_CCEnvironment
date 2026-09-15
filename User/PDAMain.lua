@@ -62,20 +62,28 @@ local function pingForPCs(nTimeout) --> tPCs(table) -- масив {sLabel, nId},
 end
 
 -- Шле команду sType з аргументами tArgs конкретному ПК (nId) і чекає відповідь із тим самим nReqId, до nTimeout
--- секунд. Завжди через справжній rednet, навіть до себе самого — os.queueEvent клонує таблиці на межі
--- вкладок multishell і губить вкладені структури (підтверджено: github.com/cc-tweaked/CC-Tweaked/issues/831),
--- тоді як rednet передає складні дані коректно.
+-- секунд. До себе самого (nId == os.getComputerID()) — локальною подією (рядком через textutils.serialize,
+-- монітор на своєму боці вже вміє так відповідати), не через rednet: самоадресований rednet.send технічно
+-- підтримується, але через відомий баг rednet.receive на тому самому ПК отримує службову обгортку замість
+-- самого повідомлення (github.com/cc-tweaked/CC-Tweaked/issues/1308).
 local function sendCommand(nId, sType, tArgs, nTimeout) --> tResponse(table) | nil, sError(string) | nil
 	local nReqId = os.startTimer(0) -- Лише унікальний ID запиту, не реальний таймер
 	local tMsg = {sType = sType, nReqId = nReqId}
 	for sKey, vValue in pairs(tArgs) do tMsg[sKey] = vValue end
-	rednet.send(nId, tMsg, fService.sMonitorProtocol)
+
+	local bIsSelf = (nId == os.getComputerID())
+	if bIsSelf then os.queueEvent(fService.sMonitorProtocol, textutils.serialize(tMsg))
+	else rednet.send(nId, tMsg, fService.sMonitorProtocol) end
 
 	local nTimerId = os.startTimer(nTimeout)
 	while true do
 		local sEvent, a, b, c = os.pullEvent()
 		if (sEvent == "timer") and (a == nTimerId) then return nil, "Timeout waiting for response" end
-		if (sEvent == "rednet_message") and (a == nId) and (c == fService.sMonitorProtocol) and (type(b) == "table") and (b.nReqId == nReqId) then return b end
+		if bIsSelf and (sEvent == fService.sMonitorProtocol) then
+			local tResp = textutils.unserialize(a)
+			if (tResp ~= nil) and (tResp.nReqId == nReqId) then return tResp end
+		end
+		if (not bIsSelf) and (sEvent == "rednet_message") and (a == nId) and (c == fService.sMonitorProtocol) and (type(b) == "table") and (b.nReqId == nReqId) then return b end
 	end
 end
 
@@ -164,7 +172,7 @@ if sMode == "app" then
 		tApps[sAppName].fnRun()
 	end
 else
-	print("#Name: PDAMain.lua# || #Version: 1.6.0#\n")
+	print("#Name: PDAMain.lua# || #Version: 1.7.0#\n")
 	while true do
 		print(" - Select an app:")
 		local tNames = {}
